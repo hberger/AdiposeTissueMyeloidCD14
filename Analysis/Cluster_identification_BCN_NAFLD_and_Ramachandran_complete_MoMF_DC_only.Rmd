@@ -131,8 +131,8 @@ if(rerun_reprocess) {
 
 # Cluster overview
 
-```{r}
-DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, dims=c(1,2))
+```{r, fig.width=8, fig.height=6}
+DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, dims=c(1,2)) + NoLegend()
 ```
 
 ## New clusters vs. cluster labels from full data sets
@@ -180,6 +180,7 @@ scData_MoMF.DC = AddMetaData(scData_MoMF.DC, cluster_assignment[as.character(scD
 ```
 
 ```{r, fig.width=10, fig.height=8}
+scData_MoMF.DC$cluster_label = factor(scData_MoMF.DC$cluster_label, levels=sort(unique(scData_MoMF.DC$cluster_label)))
 scData_MoMF.DC = SetIdent(scData_MoMF.DC, value="cluster_label" )
 DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, label.size = 5) + NoLegend()
 ```
@@ -219,9 +220,7 @@ pheatmap(mm_r, cluster_cols = F, cluster_rows=F)
 save(scData_MoMF.DC,file=file.path(data_storage_folder, "scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"))
 ```
 
-```{r}
-scData_MoMF.DC$cluster_label = factor(scData_MoMF.DC$cluster_label, levels=sort(unique(scData_MoMF.DC$cluster_label)))
-```
+
 
 
 ```{r}
