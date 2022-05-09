@@ -1,0 +1,32 @@
+ClusterID	Type	Label	Markers
+0	MoMF	Classical Monocytes/MoMF	MJV BCN NAFLD
+1	Lymphocytes	T/NK-Cell 1	CD3;RORA;GATA3
+2	Lymphocytes	T/NK-Cell 2	CD3;RORA;GATA3
+3	Lymphocytes	T/NK-Cell 3	CD3;RORA;GATA3
+4	Lymphocytes	T/NK-Cell 4	CD3;RORA;GATA3
+5	Mo	Classical Monocytes 1	MJV BCN NAFLD;CD14+;CD16-
+6	MoMF	Perivascular MF	MJV BCN NAFLD
+7	Stromal	MVEC 1	CD34;PROCR;HOXB5;FDG5
+8	Lymphocytes	T/NK-Cell 5	CD3;RORA;GATA3
+9	Granulocytes	Neutrophils	PGLYRP1;CSF3R;FCGR3B
+10	Mo	Non-classical Monocytes	CD68+;CD16+;CD14-
+11	MoMF	DC-like/Perivascular	MJV BCN NAFLD;CD1C
+12	Lymphocytes	B-Cell	CD19;CD20
+13	Lymphocytes	T/NK-Cell 6	CD3;RORA;GATA3
+14	MoMF	KC-like	MJV BCN NAFLD;VSIG4;TIMD4;MARCO
+15	MoMF	Lipid Associated MF	MJV BCN NAFLD; TREM2
+16	Epithelial	Hepatocytes 1	EPCAM;KRT18;KRT8;VTN
+17	Stromal	Stellate 1	MSigDB
+18	Lymphocytes	T/NK-Cell 7	CD3;RORA;GATA3
+19	Stromal	LSEC	MSigDB
+20	Stromal	MVEC 2	MSigDB
+21	n.a.	Cycling 1	TOP2A;MKI67
+22	Lymphocytes	Plasma cell	IGH
+23	Epithelial	Hepatocytes 2	EPCAM;KRT18;KRT8
+24	DC	pre-DC	CLEC4C
+25	Stromal	Stellate 2	MSigDB
+26	Stromal	Endothelial	MSigDB
+27	DC	cDC	XCR1
+28	n.a.	n.a.	
+29	Granulocytes	Mast cell/basophils	CPA3;MS4A2;CMA1
+

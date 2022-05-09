@@ -1,0 +1,598 @@
+---
+title: "Analysis only in MoMF and DCs"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(magrittr)
+library(dplyr)
+
+library(pheatmap)
+
+library(grid)
+library(png)
+
+library(clusterProfiler)
+
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(msigdbr)
+
+source("./DotPlot_fixed.R")
+
+source("./enrichment_helpers.R")
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2022-01-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+options("future.globals.maxSize"=2**33)
+plan("multisession", workers = 8)
+
+
+ref_folder = "../../References/"
+
+rerun_reprocess = F
+rerun_dge_analyses = F
+rerun_enrichment_analyses = F
+
+set.seed(1234)
+```
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_Ramachandran_complete.combined_cluster_annotated.RData"))
+```
+
+
+```{r}
+all_clusters_tab = unique(as.data.frame(scData.combined@meta.data[, c("seurat_clusters", "cluster_label", "cluster_type")]))
+rownames(all_clusters_tab) = as.character(all_clusters_tab$seurat_clusters)
+all_clusters_tab = all_clusters_tab[order(all_clusters_tab$seurat_clusters),]
+```
+
+
+# Overview
+
+We here filter out all cells except those belonging to MoMF and Kupffer cell clusters. 
+
+```{r}
+tmp = subset(scData.combined@meta.data, cluster_type %in% c("MoMF","DC","Mo"))
+selected_c = rownames(tmp)
+rm(tmp)
+
+scData.combined$seurat_clusters_full_DS = scData.combined$seurat_clusters
+scData.combined$cluster_label_full_DS = scData.combined$cluster_label
+
+scData_MoMF.DC <- subset(scData.combined, cells=selected_c)
+rm(scData.combined)
+gc()
+```
+
+```{r}
+options(width = 200)
+kable(table(scData_MoMF.DC$cluster_label, scData_MoMF.DC$group))
+```
+
+
+# Reanalysis
+
+Filtered data will be reanalyzed to compute PCA, UMAP embedding and clusters.
+
+```{r}
+ElbowPlot(scData_MoMF.DC)
+```
+
+```{r}
+ofile_name = "scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"
+
+if(rerun_reprocess) {
+  # Run the standard workflow for visualization and clustering
+
+  DefaultAssay(scData_MoMF.DC) <- "integrated"
+
+  scData_MoMF.DC <- RunPCA(scData_MoMF.DC, npcs = 30, verbose = TRUE)
+  gc()
+  npc = 15
+  # t-SNE and Clustering
+  scData_MoMF.DC <- RunUMAP(scData_MoMF.DC, reduction = "pca", dims = 1:npc, n.components = 2L)
+  scData_MoMF.DC <- FindNeighbors(scData_MoMF.DC, reduction = "pca", dims = 1:npc)
+  scData_MoMF.DC <- FindClusters(scData_MoMF.DC, resolution = 0.8)
+  
+  save(scData_MoMF.DC, file=file.path(data_storage_folder, ofile_name))
+} else {
+  load(file.path(data_storage_folder, ofile_name))
+}
+```
+
+# Cluster overview
+
+```{r}
+DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, dims=c(1,2))
+```
+
+## New clusters vs. cluster labels from full data sets
+
+```{r}
+table(factor(scData_MoMF.DC$cluster_label), scData_MoMF.DC$seurat_clusters)
+```
+
+
+```{r}
+m = table(scData_MoMF.DC$group, scData_MoMF.DC$seurat_clusters)
+m
+```
+
+```{r, fig.width=10, fig.height=6}
+mm = as.matrix.data.frame(m)
+colnames(mm) = colnames(m)
+rownames(mm) = rownames(m)
+mm_rel = sweep(mm, 1, apply(mm, 1,sum), "/")
+pheatmap(mm_rel, main="Relative single cell contribution of each cluster to condition totals")
+```
+
+
+```{r, fig.width=16, fig.height=8}
+mm_rel_ts = reshape2::melt(mm_rel)
+colnames(mm_rel_ts) = c("Group","Cluster","Proportion_cells")
+#mm_rel_ts$Group  = factor(mm_rel_ts$Group, levels= c("BM myeloid CD16 (Kontrolle)","BM DEN + 16 Wochen CCl4","Leber myeloid CD16 (Kontrolle)" ) )
+mm_rel_ts$Cluster = factor(paste0("C.",mm_rel_ts$Cluster))
+
+ggplot(mm_rel_ts, aes(x=Group, fill = Cluster, y = Proportion_cells, group=Cluster)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=60, hjust=1)) + facet_wrap(~ Cluster )
+
+```
+
+
+
+# Final cluster assigment
+
+```{r}
+cluster_assignment = read.table("Cluster_assignments/BCN_NAFLD_Clusters_with_Ramachandran_complete_MoMF_DC_2022-02-11.txt", sep="\t",header=T, stringsAsFactors = F)
+options(width = 180)
+print(cluster_assignment)
+rownames(cluster_assignment) = as.character(cluster_assignment$ClusterID)
+scData_MoMF.DC = AddMetaData(scData_MoMF.DC, cluster_assignment[as.character(scData_MoMF.DC$seurat_clusters),"Label"], col.name = "cluster_label")
+scData_MoMF.DC = AddMetaData(scData_MoMF.DC, cluster_assignment[as.character(scData_MoMF.DC$seurat_clusters),"Type"], col.name = "cluster_type")
+```
+
+```{r, fig.width=14, fig.height=8}
+scData_MoMF.DC = SetIdent(scData_MoMF.DC, value="cluster_label" )
+DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE)
+```
+
+```{r}
+m = table(scData_MoMF.DC$cluster_label, scData_MoMF.DC$group)
+m
+```
+
+```{r}
+mm  = as.matrix.data.frame(m)
+colnames(mm) = colnames(m)
+rownames(mm) = rownames(m)
+
+mm_r = sweep(mm, 2, apply(mm,2,sum), "/")
+options(width=200)
+kable(round(mm_r,3))
+```
+
+
+```{r, fig.width=10,fig.height=7}
+pheatmap(mm_r, cluster_cols = F, cluster_rows=F)
+```
+
+<!-- ```{r, fig.width=14, fig.height=8} -->
+<!-- mm_rel_ts = reshape2::melt(t(mm_r)) -->
+<!-- colnames(mm_rel_ts) = c("Group","Cluster","Proportion_cells") -->
+<!-- mm_rel_ts$Cluster = factor(paste0("",mm_rel_ts$Cluster)) -->
+
+<!-- mm_rel_ts$Tissue = ifelse(grepl("BM|Knochenmark", mm_rel_ts$Group), "BM","Liver") -->
+
+<!-- ggplot(mm_rel_ts, aes(x=Group, fill = Tissue, y = Proportion_cells, group=Cluster)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=60, hjust=1)) + facet_wrap(~ Cluster ) -->
+
+<!-- ``` -->
+
+```{r}
+save(scData_MoMF.DC,file=file.path(data_storage_folder, "scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"))
+```
+
+```{r}
+all_clusters_tab = unique(as.data.frame(scData_MoMF.DC@meta.data[, c("seurat_clusters", "cluster_label", "cluster_type")]))
+rownames(all_clusters_tab) = as.character(all_clusters_tab$seurat_clusters)
+all_clusters_tab = all_clusters_tab[order(all_clusters_tab$seurat_clusters),]
+```
+
+
+
+# Cluster marker genes
+
+```{r}
+output_file_name = "cluster_marker_NAFLD_Ramachandran_complete_MoMF_DC.Rdata"
+if(rerun_dge_analyses) {
+  scData_MoMF.DC_markers <- FindAllMarkers(object = scData_MoMF.DC, only.pos = FALSE)
+  save(scData_MoMF.DC_markers, file=file.path(data_storage_folder, output_file_name))
+  write_xlsx(scData_MoMF.DC_markers,file.path(result_folder, "All_markers_NAFLD_Ramachandran_complete_MoMF_DC.xlsx"))
+} else {
+  load(file.path(data_storage_folder, output_file_name))
+}
+cluster_markers = scData_MoMF.DC_markers
+```
+
+```{r, fig.width=18, fig.height=10}
+top_5_markers = unique(unlist(tapply(scData_MoMF.DC_markers$gene, scData_MoMF.DC_markers$cluster, head, 5)))
+DotPlot(scData_MoMF.DC, features = top_5_markers , dot.scale = 5) +    RotatedAxis()
+```
+
+
+```{r}
+for (n in unique(scData_MoMF.DC_markers$cluster)) {
+  tmp = subset(scData_MoMF.DC_markers, cluster==n)
+  tmp_up = subset(tmp, avg_log2FC > 0)
+  tmp_up$direction = "up"
+  tmp_down = subset(tmp, avg_log2FC < 0)
+  tmp_down$direction = "down"
+  
+  final_top_genes = rbind(head(tmp_up,5), head(tmp_down,5))
+  final_top_genes = final_top_genes[order(final_top_genes$avg_log2FC),]
+  final_top_genes$gene = factor(final_top_genes$gene, levels = final_top_genes$gene)
+  p = ggplot(final_top_genes, aes(y=avg_log2FC, x=gene, fill=direction)) + geom_bar(stat="identity") + ggtitle(paste0("Cluster ",n," vs. rest")) + coord_flip()
+  print(p)
+  
+}
+```
+
+## Functional enrichment
+
+We here use serveral data bases of known functionally relevant gene expression signatures and gene sets to identify those who are enriched among cluster marker lists. 
+
+Data bases used are:
+
+  - Molecular Signature DB (MSigDB, https://www.gsea-msigdb.org/gsea/msigdb), collections:
+     - H (Hallmark), 
+     - C2 (curated genesets and canonical pathways from KEGG, REACTOME etc.)
+     - C3 (target genes of transcription factors and micro-RNAs)
+     - C7 (immunologic signature gene sets)
+  - KEGG DB (overlaps C2 database from MSigDB)
+  - REACTOME DB (overlaps C2 database from MSigDB)
+  - GO Biological Process
+  - MAF_RES (Macrophage Resource)  - Genes up-/downregulated upon stimulation with different activators in macrophages (Xue et al, Immunity 2014, doi: 10.1016/j.immuni.2014.01.006)
+  - Marker genes from clusters described in Hildgreth et al., Nat Immunology 2021, p.639
+
+
+```{r}
+set_gene_list(rownames(scData_MoMF.DC@assays$RNA@data), ref_folder)
+
+sc_signature_tab = load_sigs()
+```
+
+
+```{r}
+title = "Cluster_markers"
+project_name = "BCN_and_Ramachandran_complete_MoMF_DC"
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+
+if(rerun_enrichment_analyses) {
+
+  tmp = cluster_markers
+  tmp$celltype = tmp$cluster
+  tmp$GeneSymbol = tmp$gene
+  all_enrichments = compute_functional_enrichment(scData_MoMF.DC, tmp, paste0(title, "_", project_name) )
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+# Individual marker genes
+
+```{r}
+plot_genes <- function(dataset, genes) {
+  
+  all_genes =rownames(dataset@assays$RNA)
+  
+  for (g in sel_markers) {
+    if (!g %in% all_genes) {
+      print(paste0("Gene ",g," has no data (possibly filtered out)."))
+      next
+    } else {
+        p1  =FeaturePlot(object = dataset, features = g, reduction="umap", label=T)
+        p2 = VlnPlot(dataset, features = g, ncol = 1, pt.size = 0.01) + NoLegend()
+        print(plot_grid(p1,p2, ncol=2,align="h"))
+    }
+  }
+}
+```
+
+
+#### Top enriched terms per cluster
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+```{r}
+scData.combined = scData_MoMF.DC
+```
+
+
+# Individual marker expression
+
+## Positive/Negative selection markers 
+
+These are global cell markers for major cell lineages and types (B/T-cells, Mo/MF etc)
+
+Cells were sorted as CD14+ cells.
+
+CD45 is Ptprc.  
+Pglyrp1 - circulating polymorphonuclear leukocytes (granulocytes + mast cells)  
+
+We here add Cd3e/d/g as pan-T marker and Cd20 (Ms4a1) as mature B-cell marker.
+Gata3, Cxcr6, Rora - T-cell markers
+
+Ly6a(Sca-1) - positive in HSC/MPP
+Procr,Fdg5, Hoxb5 - HSC
+
+Epor, Slamf1(Cd150) - MegE - lineage
+
+```{r, fig.width=14, fig.height=6}
+
+sel_markers=toupper(c("Ptprc","Pglyrp1","Cd4","Cd3e","Cd3d","Cd3g", "Gata3","Cxcr6","Rora","Cd7","Cd8a","Cd4","Cd19","Ms4a1","Ly6a", "Cd34","Procr","Fgd5","Hoxb5","Epor","Slamf1","EPCAM","VIM", "VWF", "COL2A1"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+
+```
+
+## Granulocyte subpopulations
+
+Pglyrp1 - circulating polymorphonuclear leukocytes (granulocytes + mast cells)  
+Csf3r - colony stimulating factor 3 receptor (granulocytes)  G-CSF-R. Higher in mature blood neutrophils (Shinjo et al. 1995 doi: 10.1111/j.1365-2141.1995.tb05390.x)
+
+Mpo,Elane - neutrophil markers  
+Prg2 - eosinophils (Dahlin)  
+Gzmb, Cma1 - Mast cell (Dahlin)  
+Ms4a2, Cpa3 Mast cell, basophil (Dahlin)  
+Fcer1a - basophils, mastcells - high affinity IgE receptor  
+Ggnt2 - eosinophils  
+Il5ra - eosinophil progenitor  
+
+
+
+```{r, fig.width=14, fig.height=6}
+
+sel_markers=toupper(c("Pglyrp1","Csf3r","Mpo","Elane","Gngt2","Il5ra","Prg2","Gzmb","Cma1","Ms4a2","Cpa3","Fcer1a"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+
+```
+
+
+## Monocyte and macrophage markers
+
+Adgre1 = F4/80 = Emr1, Blood Monocytes  
+
+CD14lowCD16high - non-classical MoMF    
+CD16 - Fcgr4 (FCGR3A/B)  
+Fcgr1 (Cd64) MoMF  
+Spn (Cd45) classical Mo  
+Cd11b = Itgam  
+
+EMP (Mass et al.) Csf1r + Kit + CD45 low AA4.1(Cd93)+   
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("Adgre1","Ccr2","Ccr5","Arg1","Mgst1","Fn1","Cd74","Cd68","S100a8","S100a9","Cd14","Fcgr3A","Fcgr3B","Cx3cr1","Fcgr1a","Spn","Itgam","Csf1r","Kit","Cd93","Il7r","Flt3","Cxcr4","IL1B"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Markers from Jaitin et al. (Cell 2019, https://doi.org/10.1016/j.cell.2019.05.054)
+
+TREM2 - Lipid associated Macrophages  
+RETLNA, FN1, CD163 - Mo1  
+PLAC8, CLEC4E - Mo2  
+CD9, NCHE1 - adipose tissue MF  
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("TREM2","RETLNA","CD163","PLAC8","CLEC4E","CD9","NCHE1"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Kupffer cell markers
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("C1qa","C1qb","Cd163","Vsig4","Mafb","Marco","Mrc1","Cd14","Gpr183", "Clec4f","Nr1h3","Id3","Id1","Spic","Timd4"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+
+## DC markers
+
+Xcr1 cDC  
+Siglech pDC  
+Irf8 pre-DC1  
+Ccr7 cDC2  
+Pclaf (2810417H13Rik) CMoP / pre-DC1  
+Cd209a cDC2, pDC  
+Tlr2 cDC  
+Tlr4 cDC  
+
+Socs2 Tissue migratory DC (Nirschl et al. 2017, 10.1016/j.cell.2017.06.016)  
+
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c( "Socs2", "Xcr1", "Siglech", "Cd209a", "Irf8", "Pclaf", "Tlr2","Tlr4","Tlr7","Tlr9","CD1C","CLEC4C"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+## MHC-I/II
+
+```{r, fig.width=14, fig.height=6}
+#sel_markers=c("H2-Oa","H2-DMa","H2-DMb1","H2-DMb2","H2-Ob","H2-Ab1","H2-Aa","H2-Eb1","H2-Eb2")
+sel_markers = c("HLA-A","HLA-B","HLA-C","HLA-D","HLA-E","HLA-F","HLA-G","HLA-DRA","HLA-DRB","HLA-DQA1","HLA-DQB1","HLA-DPA1","HLA_DPB1","HLA_DMA","HLA_DMB","HLA-DOA","HLA_DOB","MICA","MICB")
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Proliferation
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("Top2a","Mki67","Pcna"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+
+
+<!-- # Apoptosis score and mitochondrial RNA -->
+
+<!-- We use the HALLMARK_APOPTOSIS gene set from MSigDB to compute an apoptosis score as the mean expression across all signature genes per cell.  -->
+
+<!-- ```{r} -->
+<!-- library(fgsea) -->
+
+<!-- gset_collections_human = list() -->
+
+<!-- gsea_gmt_folder = "/home/hilmar/Work/References/genesets/MSigDB/v7.1/" -->
+<!-- #gsea_gmt_folder = "S:/AG/AG-Sigal/Research/Documentation/Projects/Hilmar Berger/References/genesets/MSigDB/V7.1" -->
+<!-- gsea_gmt_files = c("h.all.v7.1.symbols.gmt") # ,"c2.all.v7.1.symbols.gmt","c3.all.v7.1.symbols.gmt","c5.bp.v7.1.symbols.gmt","c6.all.v7.1.symbols.gmt","c7.all.v7.1.symbols.gmt" -->
+<!-- names(gsea_gmt_files) = c("HALLMARK") -->
+<!-- gset_collections_human = list() -->
+<!-- for (n in names(gsea_gmt_files)) { -->
+<!--   gset_collections_human[[n]] = gmtPathways(paste(gsea_gmt_folder, gsea_gmt_files[[n]], sep="/") ) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- all_genes =rownames(scData_MoMF.DC@assays$RNA) -->
+<!-- homologene_human_mouse = fread("/home/hilmar/Work/References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt") -->
+<!-- #homologene_human_mouse = fread("S:/AG/AG-Sigal/Research/Documentation/Projects/Hilmar Berger/References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt") -->
+<!-- all_symbols = data.frame(GeneSymbol=unique(all_genes)) -->
+<!-- a1 = merge(all_symbols, homologene_human_mouse[,c("entrez_1","symbol_1","symbol_2"), with=F], by.x="GeneSymbol", by.y="symbol_2", all.x=T, sort=F) -->
+
+<!-- mouse_to_human=a1 -->
+<!-- mouse_to_human = subset(mouse_to_human, !is.na(GeneSymbol) & !is.na(symbol_1) & !symbol_1 == "") -->
+<!-- rownames(mouse_to_human) = mouse_to_human$GeneSymbol -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- apoptosis_sig_genes_hs = gset_collections_human[[1]][["HALLMARK_APOPTOSIS"]] -->
+<!-- apoptosis_sig_genes_mm = subset(mouse_to_human, symbol_1 %in% apoptosis_sig_genes_hs )$GeneSymbol -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- sel_mat = Assays(subset(scData_MoMF.DC, features=apoptosis_sig_genes_mm), "RNA")@data -->
+
+<!-- scData_MoMF.DC = AddMetaData(scData_MoMF.DC, col.name = "apoptosis_score", apply(sel_mat, 2, mean, na.rm=T) ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- FeaturePlot(object = scData_MoMF.DC,  features = "percent_mito", reduction="umap", label=T) -->
+<!-- ``` -->
+
+<!-- ```{r, fig.height=8} -->
+<!-- tmp = data.frame(percent_mito = scData_MoMF.DC$percent_mito, batch= scData_MoMF.DC$batch, group_label = scData_MoMF.DC$group ) -->
+<!-- ggplot(tmp, aes(fill=batch, x=group_label, y = percent_mito)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90, hjust=1)) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- FeaturePlot(object = scData_MoMF.DC,  features = "apoptosis_score", reduction="umap", label=T) -->
+<!-- ``` -->
+
+<!-- ```{r, fig.height=8} -->
+<!-- tmp = data.frame(apoptosis_score = scData_MoMF.DC$apoptosis_score, batch= scData_MoMF.DC$batch, group_label = scData_MoMF.DC$group ) -->
+<!-- ggplot(tmp, aes(fill=batch, x=group_label, y = apoptosis_score)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90, hjust=1)) -->
+
+<!-- ``` -->
+
+## Scores and RNA count per cluster
+
+```{r, fig.width=10, fig.height=6}
+VlnPlot(scData_MoMF.DC, features = "percent_mito", ncol = 1, pt.size = 0.01)
+#VlnPlot(scData_MoMF.DC, features = "apoptosis_score", ncol = 1, pt.size = 0.01)
+VlnPlot(scData_MoMF.DC, features = "nCount_RNA", ncol = 1, pt.size = 0.01)
+VlnPlot(scData_MoMF.DC, features = "nFeature_RNA", ncol = 1, pt.size = 0.01)
+```
+
+```{r}
+FeaturePlot(object = scData_MoMF.DC,  features = "nFeature_RNA", reduction="umap", label=T)
+```
+
+
+## Known markers
+
+CD14lowCD16high - non-classical MoMF    
+CD16 - Fcgr4 (FCGR3A/B)  
+Fcgr1 (Cd64) MoMF  
+Spn (Cd43) classical Mo  
+Cd11b = Itgam  
+
+```{r, fig.height=12, fig.width=14}
+sel_genes = toupper(c("Cd68","Cx3cr1","Itgam","Ccr2","Adgre1","Ly6c2", "Ms4a1", "Cd34", "Pglyrp1", "Clec4f", "Gata3", "Xcr1","Siglech", "Cd209a","Cxcr4","Pecam1"))
+
+sel_mat = Assays(subset(scData_MoMF.DC, features=sel_genes), "RNA")@data
+
+sel_mat_ts = reshape2::melt(as.matrix(sel_mat))
+colnames(sel_mat_ts) = c("Gene","CellID","Expression")
+meta = scData_MoMF.DC@meta.data
+sel_mat_ts = merge(sel_mat_ts, meta[,c("cluster_label","group")], by.x="CellID",by.y=0, all.x=T, sort=F)
+
+#sel_mat_ts$Gene = gsub("Ms4a1","Cd20",gsub("Fcgr4","Cd16",gsub("Itgam","Cd11b",gsub("Adgre4","FIRE",gsub("Adgre1","F4/80",gsub("Fcgr1","Cd64",gsub("Spn","Cd43",sel_mat_ts$Gene)))))))
+
+rownames(all_clusters_tab) = all_clusters_tab$cluster_label
+sel_mat_ts$cluster_type = all_clusters_tab[sel_mat_ts$cluster_label,"cluster_type"]
+
+sel_mat_ts$cluster_label = factor(sel_mat_ts$cluster_label, levels=sort(unique(sel_mat_ts$cluster_label)))
+
+ggplot(sel_mat_ts, aes(x=cluster_label,y=Expression, fill=cluster_type)) + geom_violin(scale = "width") + facet_grid(Gene ~ .) + theme(axis.text.x = element_text(angle=90, hjust=1, size=14), strip.text.y = element_text(size=12), axis.text.y=element_text(size=10)) + xlab("") 
+
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```

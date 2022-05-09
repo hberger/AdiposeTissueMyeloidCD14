@@ -1,0 +1,306 @@
+---
+title: "CellChat analysis of cluster in all NAFLD samples"
+author: "Hilmar Berger"
+
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r}
+library(Seurat)
+library(ggplot2)
+
+library(CellChat)
+library(patchwork)
+
+library(future)
+future::plan("multiprocess", workers = 4) # do parallel
+
+#sample="Liver myeloid CCl4 3Weeks_JH190129/JH190129"
+sample = "complete_NAFLD_MoMF.DC"
+output_folder = make.names(sample)
+
+if(!dir.exists(output_folder)) dir.create(output_folder)
+```
+
+```{r}
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+```
+
+```{r}
+dplyr::glimpse(CellChatDB$interaction)
+```
+
+# Overview 
+
+This analysis aims at identifying cell-cell communication using the CellChat method. We follow the guidelines from https://github.com/sqjin/CellChat/blob/master/tutorial/CellChat-vignette.html.
+
+We run the analysis for a single sample only (using clusters from the full normal diets + CCl4 set). The full ligand-receptor interaction database is used. 
+
+## Preparation and inference
+
+Cell-cell-interactions are inferred at the gene and pathway level. 
+
+```{r}
+set.seed(1234)
+reload_data = T
+
+stage1_file = file.path(output_folder, paste0("CellChat_stage1_",make.names(sample),".rds"))
+if (reload_data) {
+  load("../Analysis/Results/data_storage/2021-05-31/BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData")
+
+  #scData_MoMF.DC$group_by_batch = paste0(scData_MoMF.DC$group,"_", scData_MoMF.DC$batch)
+  #scData = subset(scData_MoMF.DC, group_by_batch == sample)
+  scData = scData.combined
+  
+  cluster_counts = table(scData$cluster_label)
+  good_clusters = names(cluster_counts[cluster_counts > 30])
+  
+  scData = subset(scData, cluster_label %in% good_clusters)
+  scData = DietSeurat(scData)
+  
+  data.input = scData@assays$RNA@data
+  meta = scData@meta.data[, c("cluster_label"),drop=F]
+  
+  cellchat <- createCellChat(object = data.input, meta=meta, group.by="cluster_label")
+  
+  #CellChatDB.use <- CellChatDB 
+  #CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+  CellChatDB.use <- CellChatDB
+  cellchat@DB <- CellChatDB.use
+
+  # subset the expression data of signaling genes for saving computation cost
+  cellchat <- subsetData(cellchat) # This step is necessary even if using the whole database
+
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  
+  # project gene expression data onto PPI network (optional)
+  cellchat <- projectData(cellchat, PPI.human)
+  
+  cellchat <- computeCommunProb(cellchat)
+  # Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+  cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+  cellchat <- computeCommunProbPathway(cellchat)
+
+  cellchat <- aggregateNet(cellchat)
+
+  saveRDS(cellchat, file = stage1_file)  
+} else {
+  cellchat = readRDS(stage1_file)
+}
+```
+
+```{r}
+df.net <- subsetCommunication(cellchat)
+df.net.p <- subsetCommunication(cellchat, slot.name="netP")
+
+write.table(df.net, file=file.path(output_folder, "Interactions_gene_level.txt"), sep="\t", quote=F, row.names=F)
+
+write.table(df.net.p, file=file.path(output_folder, "Interactions_pathway_level.txt"), sep="\t", quote=F, row.names=F)
+```
+
+
+## Identified interactions - overview
+
+```{r, fig.height=6, fig.width=10}
+tmp = table(df.net.p$pathway)
+barplot(sort(tmp), las=2, main="Count of identified pathway interactions across all clusters")
+```
+
+
+# Aggregated cell-cell communication network
+
+We here look at the number of links between clusters and summarized communication probabilities for each cluster. 
+
+## Globally
+
+```{r, fig.width=10, fig.height=7}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+## For each cluster separately
+
+```{r, fig.width=10, fig.height=10}
+mat <- cellchat@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+```
+
+## For each pathway separately
+
+```{r, fig.width=8, fig.height=8}
+pathways.show <- cellchat@netP$pathways
+
+par(mfrow=c(1,1))
+for (pp in pathways.show) {
+  netVisual_aggregate(cellchat, signaling = pp, layout = "chord")  
+}
+
+```
+
+
+```{r, eval=FALSE}
+#pathways.show <- c("WNT") 
+# Hierarchy plot
+# Here we define `vertex.receive` so that the left portion of the hierarchy plot shows signaling to fibroblast and the right portion shows signaling to immune cells 
+vertex.receiver = seq(1,4) # a numeric vector. 
+netVisual_aggregate(cellchat, signaling = pathways.show,  vertex.receiver = vertex.receiver)
+```
+
+
+```{r, fig.width=10, fig.height=8}
+# Heatmap
+par(mfrow=c(1,1))
+for (pp in pathways.show) {
+  netVisual_heatmap(cellchat, signaling = pp, color.heatmap = "Reds")
+  netAnalysis_contribution(cellchat, signaling = pp)
+}
+
+```
+
+
+```{r, eval=FALSE}
+# Access all the signaling pathways showing significant communications
+pathways.show.all <- cellchat@netP$pathways
+# check the order of cell identity to set suitable vertex.receiver
+levels(cellchat@idents)
+#vertex.receiver = seq(1,4)
+for (i in 1:length(pathways.show.all)) {
+  # Visualize communication network associated with both signaling pathway and individual L-R pairs
+  #netVisual(cellchat, signaling = pathways.show.all[i], vertex.receiver = vertex.receiver, layout = "hierarchy")
+  # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+  gg <- netAnalysis_contribution(cellchat, signaling = pathways.show.all[i])
+  ggsave(filename=file.path(output_folder, paste0(pathways.show.all[i], "_L-R_contribution.pdf")), plot=gg, width = 3, height = 2, units = 'in', dpi = 300)
+}
+```
+
+```{r, fig.width=16, fig.height=15}
+# show all the significant interactions (L-R pairs) from some cell groups (defined by 'sources.use') to other cell groups (defined by 'targets.use')
+netVisual_bubble(cellchat, remove.isolate = FALSE)
+#> Comparing communications on a single object
+```
+
+```{r, fig.width=15, fig.height=15, eval=FALSE}
+# show all the significant interactions (L-R pairs) from some cell groups (defined by 'sources.use') to other cell groups (defined by 'targets.use')
+# show all the interactions sending from Inflam.FIB
+netVisual_chord_gene(cellchat, lab.cex = 0.5,legend.pos.y = 30)
+```
+
+<!-- # WNT pathway member expression -->
+
+<!-- ```{r,fig.width=10, fig.height=10} -->
+<!-- plotGeneExpression(cellchat, signaling = "WNT") -->
+<!-- ``` -->
+
+# Signaling roles 
+
+```{r,fig.width=10, fig.height=4}
+# Compute the network centrality scores
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cellchat, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+```
+
+<!-- ## Dominant senders and receivers -->
+
+<!-- ```{r,fig.width=10, fig.height=10} -->
+<!-- # Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways -->
+<!-- gg1 <- netAnalysis_signalingRole_scatter(cellchat) -->
+<!-- #> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways -->
+<!-- # Signaling role analysis on the cell-cell communication networks of interest -->
+<!-- gg2 <- netAnalysis_signalingRole_scatter(cellchat, signaling = c("WNT","NOTCH","BMP")) -->
+<!-- #> Signaling role analysis on the cell-cell communication network from user's input -->
+<!-- gg1 + gg2 -->
+<!-- ``` -->
+
+```{r,fig.width=10, fig.height=8}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming")
+ht1 + ht2
+```
+
+
+
+# Global communication patterns
+
+
+```{r}
+library(NMF)
+library(ggalluvial)
+```
+
+
+## Outgoing patterns
+
+
+```{r}
+selectK(cellchat, pattern = "outgoing")
+```
+
+```{r, fig.height=6, fig.width=10}
+nPatterns = 3 # ADJUSTED
+cellchat <- identifyCommunicationPatterns(cellchat, pattern = "outgoing", k = nPatterns)
+```
+
+```{r, fig.height=12, fig.width=12}
+# river plot
+netAnalysis_river(cellchat, pattern = "outgoing")
+```
+
+```{r, fig.height=12, fig.width=12}
+netAnalysis_dot(cellchat, pattern = "outgoing")
+```
+
+
+## Incoming patterns
+
+
+```{r}
+selectK(cellchat, pattern = "incoming")
+```
+
+```{r, fig.height=6, fig.width=10}
+nPatterns = 4 # ADJUSTED
+cellchat <- identifyCommunicationPatterns(cellchat, pattern = "incoming", k = nPatterns)
+```
+
+```{r, fig.height=12, fig.width=12}
+# river plot
+netAnalysis_river(cellchat, pattern = "incoming")
+```
+
+```{r, fig.height=12, fig.width=12}
+netAnalysis_dot(cellchat, pattern = "incoming")
+```
+
+```{r}
+saveRDS(cellchat, file = file.path(output_folder, paste0("CellChat_NET_final_",make.names(sample),".rds") ) )
+```
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+

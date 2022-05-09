@@ -1,0 +1,164 @@
+---
+title: "Analysis BCN Adipose Myeloid Cells - Functional Enrichment with Escape"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+library(gridExtra)
+
+library(pheatmap)
+
+library(msigdbr)
+library(escape)
+library(limma)
+library(GSEABase)
+
+library(dittoSeq)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+library(future.apply)
+plan(multicore, workers=4)
+
+rerun_analyses = T
+```
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData") )
+```
+
+
+# MSigDB Hallmark Collection
+
+```{r}
+gs <- getGeneSets(library="H", species = "Homo sapiens")
+
+data_file = file.path(data_storage_folder, "MSigDB H Escape_NET_6best.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+
+  save(es, gs, file=data_file)
+  
+} else {
+  load(data_file)
+}
+```
+
+
+# MSigDB CP KEGG/Reactome
+
+
+```{r, eval=FALSE, echo=FALSE}
+
+gs_cp =  getGeneSets(library="C2", species = "Homo sapiens")
+
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+gs <- gs_cp
+
+data_file = file.path(data_storage_folder, "MSigDB C2 Escape_NET_6best.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+  
+  save(es, gs, file=data_file)
+  
+} else {
+  load(data_file)
+}
+```
+
+
+## Scores for Signatures from Published scRNA-Seq Studies
+
+Here we use signature from published scRNA-Seq studies (as selected and provided by Mar Coll) to compute gene set enrichment scores for each cell. 
+
+```{r}
+all_genes =rownames(scData.combined@assays$RNA)
+homologene_human_mouse = fread("~/work/data/References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt")
+
+all_symbols = data.frame(GeneSymbol=unique(all_genes))
+a1 = merge(all_symbols, homologene_human_mouse[,c("entrez_1","symbol_1","symbol_2"), with=F], by.x="GeneSymbol", by.y="symbol_1", all.x=T, sort=F)
+
+mouse_to_human=a1
+mouse_to_human = subset(mouse_to_human, !is.na(GeneSymbol) & !is.na(symbol_2) & !symbol_2 == "")
+rownames(mouse_to_human) = mouse_to_human$symbol_2
+```
+
+
+```{r}
+
+d1 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_CD45PosNeg", skip = 2))
+d2 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Cellype_NK_ILCs", skip = 2))
+d3 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Celltype_Myeloi", skip = 2))
+
+d1 = subset(d1, abs(avg_logFC) > 0.5)
+d2 = subset(d2, abs(avg_logFC) > 0.5)
+d3 = subset(d3, abs(avg_logFC) > 0.5)
+
+sc_signatures = append(append(split(d1$gene, d1$cluster), split(d2$gene, d2$cluster)), split(d3$gene, d3$cluster))
+
+gs_lists = list()
+
+for (n in names(sc_signatures)) {
+
+  gs = GeneSet(unique(sc_signatures[[n]]), setName = n)
+  gs_lists[[n]] = gs
+
+}
+
+gs_sc = GeneSetCollection(gs_lists)
+
+```
+
+
+```{r}
+gs <- gs_sc
+
+data_file = file.path(data_storage_folder, "MSigDB SC_Signatures_Escape_BCN.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+  
+  save(es, gs, file=data_file)
+  
+} else {
+  load(data_file)
+}
+```
+
+# Software versions
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,3 @@
+library(knitr)
+rmarkdown::render("Cluster_identification_BCN_NAFLD_and_Ramachandran.Rmd")
+quit("no")
