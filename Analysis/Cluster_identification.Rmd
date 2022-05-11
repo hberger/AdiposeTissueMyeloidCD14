@@ -479,12 +479,12 @@ save(scData.combined,file=file.path(data_storage_folder, "BCN_NAFLD.combined_clu
 
 # Export 
 
-Cluster assignations have been exported to file *Metadata_complete.txt*.
+Cluster assignations have been exported to file *Metadata_BCN_Adipose_complete.txt*.
 
 ```{r}
 tmp = scData.combined@meta.data
 tmp$cell_id = rownames(tmp)
-write.table( tmp , file="Metadata_complete.txt", sep="\t", row.names = F, quote = F)
+write.table( tmp , file="Metadata_BCN_Adipose_complete.txt", sep="\t", row.names = F, quote = F)
 ```
 
 

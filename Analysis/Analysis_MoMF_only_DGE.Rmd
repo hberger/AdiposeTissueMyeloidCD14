@@ -108,6 +108,11 @@ gc()
 ```
 
 
+```{r}
+signatures_gs = import_sigs()
+```
+
+
 # Overview
 
 ```{r}

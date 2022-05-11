@@ -16,6 +16,36 @@ compute_DGE <- function(data, target_suffix, control_suffix, group_parameter, mi
   return(dge_results)
 }
 
+import_sigs <- function() {
+  d1 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_CD45PosNeg", skip = 2))
+  d2 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Cellype_NK_ILCs", skip = 2))
+  d3 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Celltype_Myeloi", skip = 2))
+  
+  d1 = subset(d1, abs(avg_logFC) > 0.5)
+  d2 = subset(d2, abs(avg_logFC) > 0.5)
+  d3 = subset(d3, abs(avg_logFC) > 0.5)
+  
+  d_all = rbind(d1, d2, d3)[, c("cluster","gene")]
+  colnames(d_all) = c("gs_name","GeneSymbol")
+  d_all$gs_name = paste0("Hildgreth_", d_all$gs_name)
+  
+  gs_to_entrez = select(org.Hs.eg.db, keys=unique(d_all$GeneSymbol), keytype="SYMBOL",columns="ENTREZID")
+  gs_to_entrez = gs_to_entrez[!duplicated(gs_to_entrez$SYMBOL),]
+  rownames(gs_to_entrez) = gs_to_entrez$SYMBOL
+
+  angiogenesis_IPA=unlist(strsplit("ADAM9,ADM,AKR1B1,APOE,ATF3,AXL,C1QA,CCL2,CD28,CD36,CD63,CD81,CDK6,CDKN1A,CHD7,CRYAB,CSF1R,CTSB,CXCL12,DAAM1,DAB2,EGFL7,EGR1,EIF4A3,EMP1,EMP2,ENG,EPAS1,FGFR1,GAS6,HBEGF,HLA-DQB1,HMOX1,HRH1,HTRA1,ICAM1,IGF1,IGFBP4,IL18,JUN,KCNMA1,KLF2,LMNA,LYVE1,MERTK,MYC,NR4A1,NRP1,NRP2,PDGFB,PDGFC,PFKFB3,PLEKHG5,PLPP3,PLXDC1,PRDM1,PRKACB,RCAN1,RHOB,RND3,SAA1,SCARB1,SPRED1,STAB1,STARD13,TGFBI,THBD,TIMP3,TNFRSF25,VCAM1,VEGFA,WLS",","))
+  endothelial_chemotaxis_top = unlist(strsplit("LGMN,NRP1,HSPB1,VEGFA,FGFR1,NR4A1,PLEKHG5",","))
+  d_all = rbind(d_all, data.frame(gs_name = "Angiogenesis_IPA", GeneSymbol=angiogenesis_IPA))
+  d_all = rbind(d_all, data.frame(gs_name = "Endothelial_chemotaxis_top", GeneSymbol=endothelial_chemotaxis_top))
+  
+  d_all$entrez_gene = gs_to_entrez[d_all$GeneSymbol,"ENTREZID"]
+  d_all[["GeneSymbol"]] <- NULL
+  
+  return(d_all)
+  #write.table(hildgreth_ref_top_lists_gs, file="hildgreth.txt", row.names=F, sep="\t", quote=F)
+  
+}
+
 plot_top_genes <- function(data, dge_results_all, title) {
   for (n in sort(unique(data$cluster_label))) {
     tmp = subset(dge_results_all, celltype==n)
@@ -46,6 +76,11 @@ enrichMAFRES <- function(genes) {
   enricher(genes, TERM2GENE=m_t2g) 
 }
 
+enrichSignatures <- function(genes) {
+  m_t2g <- signatures_gs
+  m_t2g$gs_name = ifelse(nchar(m_t2g$gs_name)>80, paste0(substr(m_t2g$gs_name,1,80),"~"), m_t2g$gs_name)
+  enricher(genes, TERM2GENE=m_t2g) 
+}
 
 compute_functional_enrichment <- function(data, curr_dge_tab, title) {
   require(clusterProfiler)
@@ -74,7 +109,8 @@ compute_functional_enrichment <- function(data, curr_dge_tab, title) {
   all_enrichments[["GSEA_C2"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichGSEA", organism = "Homo sapiens", collection="C2")
   all_enrichments[["GSEA_C3"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichGSEA", organism = "Homo sapiens", collection="C3")
   all_enrichments[["GSEA_C7"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichGSEA", organism = "Homo sapiens", collection="C7")
-  all_enrichments[["MAF_RES"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichMAFRES")
+  #all_enrichments[["MAF_RES"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichMAFRES")
+  all_enrichments[["Signatures"]] %<-% compareCluster(geneCluster = genes_by_class, fun = "enrichSignatures")
   
   all_enrichments = as.list(all_enrichments)
     

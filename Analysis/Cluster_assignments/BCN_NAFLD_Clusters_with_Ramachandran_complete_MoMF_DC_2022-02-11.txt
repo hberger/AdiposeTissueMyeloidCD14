@@ -2,16 +2,16 @@ ClusterID	Type	Label	Markers
 0	MoMF	Classical Monocytes/MoMF 1	MJV BCN NAFLD
 1	Mo	Classical Monocytes 1	MJV BCN NAFLD;CD14+;CD16-
 2	MoMF	Classical Monocytes/MoMF 2	MJV BCN NAFLD
-3	MoMF	Perivascular MF 1	MJV BCN NAFLD
-4	MoMF	NAFLD MoMF various	MJV BCN NAFLD
+3	MoMF	Perivascular MF	MJV BCN NAFLD
+4	MoMF	Inflammatory MF	MJV BCN NAFLD
 5	Mo	Non-classical Monocytes/MoMF	CD68+;CD16+;CD14-
 6	MoMF	KC-like	MJV BCN NAFLD;VSIG4;TIMD4;MARCO
-7	MoMF	DC-like/Perivascular	MJV BCN NAFLD;CD1C
+7	MoMF	DC-like	MJV BCN NAFLD;CD1C
 8	MoMF	Classical Monocytes/MoMF 3	MJV BCN NAFLD
 9	MoMF	Lipid Associated MF	MJV BCN NAFLD; TREM2
 10	Mo	Non-classical Monocytes	CD68+;CD16+;CD14-
 11	MoMF	Classical Monocytes/MoMF 4	MJV BCN NAFLD
-12	MoMF	Perivascular MF 2	MJV BCN NAFLD
+12	MoMF	Adip.Tissue Resident MF	MJV BCN NAFLD
 13	DC	pre-DC	CLEC4C
 14	DC	cDC	XCR1
 
