@@ -1,0 +1,935 @@
+---
+title: "Cluster identification - BCN NAFLD and Ramachandran"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(magrittr)
+library(dplyr)
+
+library(pheatmap)
+
+library(grid)
+library(png)
+
+library(clusterProfiler)
+
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(msigdbr)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-11-23")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+options("future.globals.maxSize"=2**33)
+plan("multisession", workers = 8)
+
+
+#source("DotPlot_fixed.R")
+
+
+ref_folder = "../../References/"
+
+rerun_analyses = F
+rerun_gsea_analyses = F
+```
+
+We only keep clusters annotated as MoMF, DC, and KC in the global analysis and reprocess the remaining cells using the same integrated analysis. 
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_and_Ramachandran_CD45_PBMC.combined.RData"))
+
+set.seed(1234)
+
+```
+
+
+# Cluster overview
+
+```{r, fig.width=14, fig.height=8}
+DimPlot(scData.combined, reduction = "umap", label = TRUE)
+```
+
+```{r, fig.width=14, fig.height=12}
+DimPlot(scData.combined, reduction = "umap", label = TRUE, split.by = "sample_label", ncol = 4)
+```
+
+## Relation between new clusters and clusters in BCN-NAFLD-only analysis
+
+```{r}
+BCN_NAFLD_meta = read.table("./Metadata_complete.txt", sep="\t", header=T, stringsAsFactors = F)
+rownames(BCN_NAFLD_meta) = BCN_NAFLD_meta$orig_cell_id
+
+#scData.combined@meta.data$clusters_BCN_NAFLD = NA
+scData.combined@meta.data$clusters_BCN_NAFLD = BCN_NAFLD_meta[Cells(scData.combined), "cluster_label"]
+```
+
+
+```{r}
+tt = table(scData.combined$seurat_clusters, scData.combined$clusters_BCN_NAFLD, dnn=c("New clusters", "BCN NAFLD cluster labels"))
+tt
+```
+
+```{r, fig.height=8}
+pheatmap(tt)
+pheatmap(log10(tt+1))
+```
+
+# Marker genes for clusters
+
+```{r}
+#DEN_CCL4_markers <- FindAllMarkers(object = scData.combined, only.pos = TRUE, min.pct = 0.6, min.diff.pct = 0.3, thresh.use = 0.3, test.use = "roc")
+if(rerun_analyses) {
+  cluster_markers <- FindAllMarkers(object = scData.combined, only.pos = TRUE)
+  save(cluster_markers, file=file.path(data_storage_folder, "All_markers_BCN_and_Ramachandran.Rdata"))
+  write_xlsx(cluster_markers,file.path(result_folder, "All_markers_BCN_and_Ramachandran.xlsx"))
+} else {
+  load(file.path(data_storage_folder, "All_markers_BCN_and_Ramachandran.Rdata"))
+}
+```
+
+```{r}
+plot_top_genes <- function(data, dge_results_all, title) {
+  for (n in sort(unique(data$seurat_clusters))) {
+    tmp = subset(dge_results_all, cluster==n)
+    if(nrow(tmp)<1) next
+    tmp_up = subset(tmp, avg_log2FC > 0)
+    if(nrow(tmp_up)<1) next
+    tmp_up$direction = "up"
+    #tmp_down = subset(tmp, avg_log2FC < 0)
+    #tmp_down$direction = "down"
+    
+    #final_top_genes = rbind(head(tmp_up,10), head(tmp_down,10))
+    final_top_genes = head(tmp_up, 10)
+    final_top_genes = final_top_genes[order(final_top_genes$avg_log2FC),]
+    final_top_genes$gene = factor(final_top_genes$gene, levels = final_top_genes$gene)
+    p = ggplot(final_top_genes, aes(y=avg_log2FC, x=gene, fill=direction)) + geom_bar(stat="identity") + ggtitle(paste0(n, ", ", title)) + coord_flip() + theme(axis.text.y =  element_text(size=12) )
+    print(p)
+    
+  }
+}
+```
+
+
+## overview (10 top genes for each cluster)
+
+```{r, fig.width=14, fig.height=12}
+cluster_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(scData.combined, features = top10$gene) + NoLegend()
+```
+
+
+## Percent expression of top markers across clusters
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(cluster_markers$gene, cluster_markers$cluster, head, 5)))
+DotPlot(scData.combined, features = top_5_markers , dot.scale = 4, cols = c("red", "blue"), assay = "RNA") +    RotatedAxis()
+```
+
+## Log2 Fold Changes of top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, cluster_markers, "Cluster markers")
+```
+
+
+<!-- ```{r} -->
+<!-- marker_matrix = dcast(as.data.table(DEN_CCL4_markers), gene ~ cluster, value.var="avg_logFC") -->
+<!-- tmp1 = as.matrix(marker_matrix[,2:ncol(marker_matrix)]) -->
+<!-- # tmp = cor(tmp1, method="spearman", use="pairwise") -->
+<!-- # pheatmap(tmp, cluster_rows=F, cluster_cols=F) -->
+
+<!-- tmp1[is.na(tmp1)] <- 0 -->
+<!-- tmp = cor(tmp1, method="spearman", use="pairwise") -->
+<!-- pheatmap(tmp, cluster_rows=F, cluster_cols=F, main="Pairwise marker gene correlations") -->
+<!-- ``` -->
+
+```{r, eval=FALSE}
+all_cluster_numbers = as.character(sort(unique(scData.combined$seurat_clusters)))
+tmp = table(scData.combined$seurat_clusters)
+all_cluster_numbers_gt_3_cells = names(tmp[tmp>3])
+```
+
+
+```{r, eval=FALSE}
+if(rerun_analyses) {
+DefaultAssay(scData.combined) <- "RNA"
+
+  cons_markers = list()
+  for (n in all_cluster_numbers_gt_3_cells) {
+    nn = as.integer(n)
+    cons_markers[[as.character(n)]] <- tryCatch({FindConservedMarkers(scData.combined, ident.1 = nn, grouping.var = "group", verbose = FALSE)}, error=function(e) NULL)
+  }
+  save(cons_markers, file=file.path(data_storage_folder,"Conserved_cluster_markers_BCN_and_Ramachandran.Rdata"))
+  
+  tmp1 = mapply(function(x,y) {x$cluster=rep(y, nrow(x));x$GeneSymbol = rownames(x); x$avg_logFC_global=apply(x[,grepl("_avg_logFC",colnames(x)),drop=F],1,mean,na.rm=T);x}, cons_markers, names(cons_markers))
+  all_unique_colnames = unique(unlist(lapply(tmp1, colnames)))
+  tmp2 = lapply(tmp1, function(x) {missing_cols = all_unique_colnames[!all_unique_colnames %in% colnames(x)]; for (m in missing_cols) {x[[m]]=NA}; x})
+  cons_markers_all = do.call(rbind, tmp2)
+  write_xlsx(cons_markers_all,file.path(result_folder, "All_cons_markers_BCN_and_Ramachandran.xlsx"))
+  
+} else {
+  load(file.path(data_storage_folder,"Conserved_cluster_markers_BCN_and_Ramachandran.Rdata"))
+}
+
+```
+
+
+## Functional enrichment
+
+We here use serveral data bases of known functionally relevant gene expression signatures and gene sets to identify those who are enriched among cluster marker lists. 
+
+Data bases used are:
+
+  - Molecular Signature DB (MSigDB, https://www.gsea-msigdb.org/gsea/msigdb), collections:
+     - H (Hallmark), 
+     - C2 (curated genesets and canonical pathways from KEGG, REACTOME etc.)
+     - C3 (target genes of transcription factors and micro-RNAs)
+     - C7 (immunologic signature gene sets)
+  - KEGG DB (overlaps C2 database from MSigDB)
+  - REACTOME DB (overlaps C2 database from MSigDB)
+  - GO Biological Process
+  - MAF_RES (Macrophage Resource)  - Genes up-/downregulated upon stimulation with different activators in macrophages (Xue et al, Immunity 2014, doi: 10.1016/j.immuni.2014.01.006)
+  - Marker genes from clusters described in Hildgreth et al., Nat Immunology 2021, p.639
+
+```{r}
+# differentially expressed genes from macrophage stimulations in GSE47189
+maf_resource_env = new.env()
+load("../../DataSets/GSE47189_MacrophageResource/DGE_results_Macrophages.Rdata", envir = maf_resource_env)
+
+all_maf_dge = get("all_results", maf_resource_env)
+```
+
+<!-- ```{r} -->
+<!-- homologene_human_mouse = fread(file.path(ref_folder, "HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt")) -->
+<!-- all_entrez_ids = data.frame(EntrezID=unique(all_maf_dge[[1]]$ENTREZID)) -->
+<!-- all_symbols = data.frame(GeneSymbol=unique(all_maf_dge[[1]]$SYMBOL)) -->
+<!-- a1 = merge(all_entrez_ids, homologene_human_mouse[,c("entrez_1","symbol_1","entrez_2","symbol_2"), with=F], by.x="EntrezID", by.y="entrez_1", all.x=T, sort=F) -->
+
+<!-- human_to_mouse=a1 -->
+<!-- human_to_mouse = subset(human_to_mouse, !is.na(entrez_2) & !is.na(symbol_2) & !symbol_2 == "" & !is.na(EntrezID)) -->
+<!-- rownames(human_to_mouse) = human_to_mouse$EntrezID -->
+<!-- ``` -->
+
+
+```{r}
+maf_res_top_lists = list()
+
+# select differentially expressed genes and convert to mouse Entrez IDs
+for (n in names(all_maf_dge)) {
+  n_new = gsub('\UFFB5',"^", n)
+  tmp = subset(all_maf_dge[[n]], logFC > 1 & adj.P.Val < 0.05 & !is.na(ENTREZID))
+  if(nrow(tmp)>0) maf_res_top_lists[[paste0(n,"_UP")]] = data.frame(gs_name = paste0(n_new,"_UP"), entrez_gene = tmp$ENTREZID, stringsAsFactors = F)
+  tmp = subset(all_maf_dge[[n]], logFC < -1 & adj.P.Val < 0.05 & !is.na(ENTREZID))
+  if(nrow(tmp)>0) maf_res_top_lists[[paste0(n,"_DOWN")]] = data.frame(gs_name = paste0(n_new,"_DOWN"), entrez_gene = tmp$ENTREZID, stringsAsFactors = F)
+}
+
+maf_ref_top_lists_gs = do.call(rbind, maf_res_top_lists)
+rownames(maf_ref_top_lists_gs) <- NULL
+
+rm(all_maf_dge)
+gc()
+```
+
+
+```{r}
+d1 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_CD45PosNeg", skip = 2))
+d2 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Cellype_NK_ILCs", skip = 2))
+d3 = as.data.frame(read_excel("../Literature/Hildreth_NatImmunology_Cluster_Markers.xlsx", sheet = "Cluster_Markers_Celltype_Myeloi", skip = 2))
+
+d1 = subset(d1, abs(avg_logFC) > 0.5)
+d2 = subset(d2, abs(avg_logFC) > 0.5)
+d3 = subset(d3, abs(avg_logFC) > 0.5)
+
+d_all = rbind(d1, d2, d3)[, c("cluster","gene")]
+colnames(d_all) = c("gs_name","GeneSymbol")
+
+gs_to_entrez = select(org.Hs.eg.db, keys=unique(d_all$GeneSymbol), keytype="SYMBOL",columns="ENTREZID")
+gs_to_entrez = gs_to_entrez[!duplicated(gs_to_entrez$SYMBOL),]
+rownames(gs_to_entrez) = gs_to_entrez$SYMBOL
+
+d_all$entrez_gene = gs_to_entrez[d_all$GeneSymbol,"ENTREZID"]
+d_all[["GeneSymbol"]] <- NULL
+d_all$gs_name = paste0("Hildgreth_", d_all$gs_name)
+
+hildgreth_ref_top_lists_gs = d_all
+write.table(hildgreth_ref_top_lists_gs, file="hildgreth.txt", row.names=F, sep="\t", quote=F)
+```
+
+```{r}
+enrichGSEA <- function(genes, collection, organism) {
+  m_t2g <- msigdbr(species = organism, category = collection)[, c("gs_name", "entrez_gene")]
+  m_t2g$gs_name = ifelse(nchar(m_t2g$gs_name)>80, paste0(substr(m_t2g$gs_name,1,80),"~"), m_t2g$gs_name)
+  enricher(genes, TERM2GENE=m_t2g) 
+}
+
+enrichMAFRES <- function(genes) {
+  m_t2g <- maf_ref_top_lists_gs
+  m_t2g$gs_name = ifelse(nchar(m_t2g$gs_name)>80, paste0(substr(m_t2g$gs_name,1,80),"~"), m_t2g$gs_name)
+  enricher(genes, TERM2GENE=m_t2g) 
+}
+
+enrichHildgreth <- function(genes) {
+  m_t2g <- hildgreth_ref_top_lists_gs
+  m_t2g$gs_name = ifelse(nchar(m_t2g$gs_name)>80, paste0(substr(m_t2g$gs_name,1,80),"~"), m_t2g$gs_name)
+  enricher(genes, TERM2GENE=m_t2g) 
+}
+
+compute_functional_enrichment <- function(sc_data, curr_dge_tab, title) {
+  
+  curr_dge_tab$direction = with(curr_dge_tab, ifelse(avg_log2FC > 0, "Up", ifelse(avg_log2FC < 0, "Down","nc")) )
+  curr_dge_tab$gene_group = with(curr_dge_tab, paste0(celltype,"_",direction))
+  
+  tmp = AnnotationDbi::select(org.Hs.eg.db, keys=rownames(sc_data@assays$RNA), keytype = "SYMBOL", columns="ENTREZID")
+
+  gs2e = tapply(tmp$ENTREZID, tmp$SYMBOL, paste, collapse=",")
+  e2gs = tapply(tmp$SYMBOL, tmp$ENTREZID, paste, collapse=",")
+  
+  genes_by_class = split(gs2e[curr_dge_tab$GeneSymbol], factor(curr_dge_tab$gene_group))
+  genes_by_class = lapply(genes_by_class, function(x) unique(x[!is.na(x)]))
+  
+  
+  all_enrichments = new.env() # futures can only be assigned to an environment, not a list
+
+  # future has problems identifying the enrich... functions from preexisting packages as global variabales (at least on Windows) - lets define the full path for them
+  all_enrichments[["GO_BP"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichGO, OrgDb="org.Hs.eg.db", ont="BP")
+  all_enrichments[["KEGG"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichKEGG, organism = "hsa", use_internal_data=T)
+  all_enrichments[["REACTOME"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichPathway, organism = "human")
+  all_enrichments[["GSEA_H"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichGSEA, organism = "Homo sapiens", collection="H")
+  all_enrichments[["GSEA_C2"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichGSEA, organism = "Homo sapiens", collection="C2")
+  all_enrichments[["GSEA_C3"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichGSEA, organism = "Homo sapiens", collection="C3")
+  all_enrichments[["GSEA_C7"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichGSEA, organism = "Homo sapiens", collection="C7")
+  all_enrichments[["MAF_RES"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichMAFRES)
+  all_enrichments[["Hildgreth"]] %<-% compareCluster(geneCluster = genes_by_class, fun = enrichHildgreth)
+  
+  all_enrichments = as.list(all_enrichments)
+    
+  # write to table
+  for (n in names(all_enrichments)) {
+    tmp = all_enrichments[[n]]
+    tmp@compareClusterResult$database = n
+    all_enrichments[[n]] = tmp
+  }
+  
+  HM_cluster_enrichment = do.call(rbind, lapply(all_enrichments, function(x) x@compareClusterResult) )
+  
+  HM_cluster_enrichment$GeneSymbols = Map(function(x) {sapply(strsplit(x,"/"), function(y) sort(paste(e2gs[y], collapse=",")))}, HM_cluster_enrichment$geneID )
+  cc = colnames(HM_cluster_enrichment)
+  sel_cols = c("Cluster","database")
+  sel_cols = append(sel_cols, cc[!cc %in% sel_cols & !cc =="geneID"])
+  
+  fwrite(HM_cluster_enrichment[, sel_cols], file=file.path(result_folder,paste0("DGE_",title,"_enrichments_all.txt")), sep="\t", quote=F)
+
+  tmp <- group_split(HM_cluster_enrichment %>% group_by(Cluster))
+  tmp2 <- lapply(tmp, function(x) x[order(x$database, x$pvalue), c("Cluster","database","Description","GeneRatio","BgRatio","pvalue","p.adjust","qvalue","Count","GeneSymbols")] )
+  tmp2 <- lapply(tmp2, function(x) {x$GeneSymbols = unlist(lapply(x$GeneSymbols, paste, collapse=", ")) ; return(x) } )
+  names(tmp2) = unlist(lapply(tmp2, function(x) unique(as.character(x$Cluster))))
+  
+  write_xlsx(tmp2, path=file.path(result_folder,paste0("DGE_",title,"_enrichments_all.xlsx")))
+  
+  return(all_enrichments)
+}
+```
+
+```{r}
+title = "Cluster_markers"
+project_name = "BCN_and_Ramachandran"
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+
+if(rerun_gsea_analyses) {
+
+  tmp = cluster_markers
+  tmp$celltype = tmp$cluster
+  tmp$GeneSymbol = tmp$gene
+  all_enrichments = compute_functional_enrichment(scData.combined, tmp, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+### Top enriched terms per cluster
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+<!-- ```{r, fig.height=10, fig.width=16} -->
+<!-- for (n in names(all_enrichments)) { -->
+<!--   p = dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n) -->
+<!--   print(p) -->
+<!-- } -->
+<!-- ``` -->
+
+
+```{r}
+
+plot_genes <- function(dataset, genes) {
+  
+  all_genes =rownames(dataset@assays$RNA)
+  
+  for (g in genes) {
+    if (!g %in% all_genes) {
+      print(paste0("Gene ",g," has no data (possibly filtered out)."))
+      next
+    } else {
+        p1  =FeaturePlot(object = dataset, features = g, reduction="umap", label = T)
+        p2 = VlnPlot(dataset, features = g, ncol = 1, pt.size = 0.01)
+        print(plot_grid(p1,p2, ncol=2,align="h"))
+    }
+  }
+}
+```
+
+
+# Individual marker expression
+
+## Positive/Negative selection markers 
+
+These are global cell markers for major cell lineages and types (B/T-cells, Mo/MF etc)
+
+Cells were sorted as CD14+ cells.
+
+CD45 is Ptprc.  
+Pglyrp1 - circulating polymorphonuclear leukocytes (granulocytes + mast cells)  
+
+We here add Cd3e/d/g as pan-T marker and Cd20 (Ms4a1) as mature B-cell marker.
+Gata3, Cxcr6, Rora - T-cell markers
+
+Ly6a(Sca-1) - positive in HSC/MPP
+Procr,Fdg5, Hoxb5 - HSC
+
+Epor, Slamf1(Cd150) - MegE - lineage
+
+```{r, fig.width=14, fig.height=6}
+
+sel_markers=toupper(c("Ptprc","Pglyrp1","Cd4","Cd3e","Cd3d","Cd3g", "Gata3","Cxcr6","Rora","Cd7","Cd8a","Cd19","Ms4a1","Ly6a", "Cd34","Procr","Fgd5","Hoxb5","Epor","Slamf1","EPCAM","VIM"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+
+```
+
+## Granulocyte subpopulations
+
+Pglyrp1 - circulating polymorphonuclear leukocytes (granulocytes + mast cells)  
+Csf3r - colony stimulating factor 3 receptor (granulocytes)  G-CSF-R. Higher in mature blood neutrophils (Shinjo et al. 1995 doi: 10.1111/j.1365-2141.1995.tb05390.x)
+
+Mpo,Elane - neutrophil markers  
+Prg2 - eosinophils (Dahlin)  
+Gzmb, Cma1 - Mast cell (Dahlin)  
+Ms4a2, Cpa3 Mast cell, basophil (Dahlin)  
+Fcer1a - basophils, mastcells - high affinity IgE receptor  
+Ggnt2 - eosinophils  
+Il5ra - eosinophil progenitor  
+
+
+
+```{r, fig.width=14, fig.height=6}
+
+sel_markers=toupper(c("Pglyrp1","Csf3r","Mpo","Elane","Gngt2","Il5ra","Prg2","Gzmb","Cma1","Ms4a2","Cpa3","Fcer1a"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+
+```
+
+
+## Monocyte and macrophage markers
+
+Adgre1 = F4/80 = Emr1, Blood Monocytes  
+
+CD14lowCD16high - non-classical MoMF    
+CD16 - Fcgr4 (FCGR3A/B)  
+Fcgr1 (Cd64) MoMF  
+Spn (Cd45) classical Mo  
+Cd11b = Itgam  
+
+EMP (Mass et al.) Csf1r + Kit + CD45 low AA4.1(Cd93)+   
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("Adgre1","Ccr2","Ccr5","Arg1","Mgst1","Fn1","Cd74","Cd68","S100a8","S100a9","Cd14","Fcgr3A","Fcgr3B","Cx3cr1","Fcgr1a","Spn","Itgam","Csf1r","Kit","Cd93","Il7r","Flt3","Cxcr4","IL1B"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Markers from Jaitin et al. (Cell 2019, https://doi.org/10.1016/j.cell.2019.05.054)
+
+TREM2 - Lipid associated Macrophages  
+RETLNA, FN1, CD163 - Mo1
+PLAC8, CLEC4E - Mo2
+CD9, NCHE1 - adipose tissue MF
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("TREM2","RETLNA","CD163","PLAC8","CLEC4E","CD9","NCHE1"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Kupffer cell markers
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("C1qa","C1qb","Cd163","Vsig4","Mafb","Marco","Mrc1","Cd14","Gpr183", "Clec4f","Nr1h3","Id3","Id1","Spic","Timd4"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+
+## DC markers
+
+Xcr1 cDC  
+Siglech pDC  
+Irf8 pre-DC1  
+Ccr7 cDC2  
+Pclaf (2810417H13Rik) CMoP / pre-DC1  
+Cd209a cDC2, pDC  
+Tlr2 cDC  
+Tlr4 cDC  
+
+Socs2 Tissue migratory DC (Nirschl et al. 2017, 10.1016/j.cell.2017.06.016)  
+
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c( "Socs2", "Xcr1", "Siglech", "Cd209a", "Irf8", "Pclaf", "Tlr2","Tlr4","Tlr7","Tlr9","CD1C","CLEC4C"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+## MHC-I/II
+
+```{r, fig.width=14, fig.height=6}
+#sel_markers=c("H2-Oa","H2-DMa","H2-DMb1","H2-DMb2","H2-Ob","H2-Ab1","H2-Aa","H2-Eb1","H2-Eb2")
+sel_markers = c("HLA-A","HLA-B","HLA-C","HLA-D","HLA-E","HLA-F","HLA-G","HLA-DRA","HLA-DRB","HLA-DQA1","HLA-DQB1","HLA-DPA1","HLA_DPB1","HLA_DMA","HLA_DMB","HLA-DOA","HLA_DOB","MICA","MICB")
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+## Proliferation
+
+```{r, fig.width=14, fig.height=6}
+sel_markers=toupper(c("Top2a","Mki67","Pcna"))
+DefaultAssay(scData.combined) <- "RNA"
+
+plot_genes(scData.combined, sel_markers)
+```
+
+
+<!-- # Apoptosis score and mitochondrial RNA -->
+
+<!-- We use the HALLMARK_APOPTOSIS gene set from MSigDB to compute an apoptosis score as the mean expression across all signature genes per cell.  -->
+
+<!-- ```{r} -->
+<!-- library(fgsea) -->
+
+<!-- gset_collections_human = list() -->
+
+<!-- gsea_gmt_folder = "/home/hilmar/Work/References/genesets/MSigDB/v7.1/" -->
+<!-- gsea_gmt_files = c("h.all.v7.1.symbols.gmt") # ,"c2.all.v7.1.symbols.gmt","c3.all.v7.1.symbols.gmt","c5.bp.v7.1.symbols.gmt","c6.all.v7.1.symbols.gmt","c7.all.v7.1.symbols.gmt" -->
+<!-- names(gsea_gmt_files) = c("HALLMARK") -->
+<!-- gset_collections_human = list() -->
+<!-- for (n in names(gsea_gmt_files)) { -->
+<!--   gset_collections_human[[n]] = gmtPathways(paste(gsea_gmt_folder, gsea_gmt_files[[n]], sep="/") ) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- all_genes =rownames(scData.combined@assays$RNA) -->
+<!-- homologene_human_mouse = fread("/home/hilmar/Work/References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt") -->
+<!-- all_symbols = data.frame(GeneSymbol=unique(all_genes)) -->
+<!-- a1 = merge(all_symbols, homologene_human_mouse[,c("entrez_1","symbol_1","symbol_2"), with=F], by.x="GeneSymbol", by.y="symbol_2", all.x=T, sort=F) -->
+
+<!-- mouse_to_human=a1 -->
+<!-- mouse_to_human = subset(mouse_to_human, !is.na(GeneSymbol) & !is.na(symbol_1) & !symbol_1 == "") -->
+<!-- rownames(mouse_to_human) = mouse_to_human$GeneSymbol -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- sel_genesets = c("HALLMARK_APOPTOSIS","HALLMARK_E2F_TARGETS", "HALLMARK_MITOTIC_SPINDLE","HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY") -->
+<!-- for (gg in sel_genesets) { -->
+<!--   sig_genes_hs = gset_collections_human[[1]][[gg]] -->
+<!--   sig_genes_mm = subset(mouse_to_human, symbol_1 %in% sig_genes_hs )$GeneSymbol -->
+<!--   sel_mat = Assays(subset(scData.combined, features=sig_genes_mm), "RNA")@data -->
+<!--   scData.combined = AddMetaData(scData.combined, col.name = gg, apply(sel_mat, 2, mean, na.rm=T) ) -->
+<!--   print(head(sig_genes_mm)) -->
+<!--   print(length(sig_genes_mm)) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r, fig.height=8 } -->
+<!-- for (gg in sel_genesets) { -->
+<!--   print(FeaturePlot(object = scData.combined,  features = gg, reduction="umap", label=T)) -->
+<!--   print(VlnPlot(object = scData.combined, features=gg, ncol = 1, pt.size = 0.01)) -->
+<!--   tmp = data.frame(score = unlist(scData.combined[[gg]]), batch= scData.combined$batch, group_label = scData.combined$group ) -->
+<!--   print(ggplot(tmp, aes(fill=group_label, x=group_label, y = score)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle(gg)) -->
+
+<!-- } -->
+
+
+<!-- ``` -->
+
+<!-- ## S and G2M specific genes -->
+
+<!-- ```{r} -->
+<!-- # those are the mouse homologues of human cell cycle genes that come with Seurat  -->
+<!-- cell_cycle_genes = read.table("../../CVC_SC/Analysis/regev_lab_cell_cycle_genes_OK_working_with_phase.txt", sep="\t", header=F, stringsAsFactors = F) -->
+<!-- colnames(cell_cycle_genes) = c("Symbol","Phase") -->
+<!-- s.genes = subset(cell_cycle_genes, Phase=="S")$Symbol -->
+<!-- g2m.genes = subset(cell_cycle_genes, Phase=="G2M")$Symbol -->
+<!-- gsets = list("S_genes" = s.genes, "G2M_genes" = g2m.genes) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- for (gg in names(gsets)) { -->
+<!--   sig_genes_mm = gsets[[gg]] -->
+<!--   sel_mat = Assays(subset(scData.combined, features=sig_genes_mm), "RNA")@data -->
+<!--   scData.combined = AddMetaData(scData.combined, col.name = gg, apply(sel_mat, 2, mean, na.rm=T) ) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r, fig.height=8 } -->
+<!-- for (gg in names(gsets)) { -->
+<!--   print(FeaturePlot(object = scData.combined,  features = gg, reduction="umap", label=T)) -->
+<!--   print(VlnPlot(object = scData.combined, features=gg, ncol = 1, pt.size = 0.01)) -->
+<!--   tmp = data.frame(score = unlist(scData.combined[[gg]]), batch= scData.combined$batch, group_label = scData.combined$group ) -->
+<!--   print(ggplot(tmp, aes(fill=group_label, x=group_label, y = score)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle(gg)) -->
+
+<!-- } -->
+
+
+<!-- ``` -->
+
+
+
+## Mitochondrial transcript proportion
+
+```{r}
+FeaturePlot(object = scData.combined,  features = "percent_mito", reduction="umap", label=T)
+```
+
+```{r, fig.height=8}
+tmp = data.frame(percent_mito = scData.combined$percent_mito, batch= scData.combined$orig.ident, group_label = scData.combined$group )
+ggplot(tmp, aes(fill=batch, x=group_label, y = percent_mito)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90, hjust=1))
+
+```
+
+
+## Scores and RNA count per cluster
+
+```{r, fig.width=10, fig.height=6}
+VlnPlot(scData.combined, features = "percent_mito", ncol = 1, pt.size = 0.01)
+#VlnPlot(scData.combined, features = "HALLMARK_APOPTOSIS", ncol = 1, pt.size = 0.01)
+VlnPlot(scData.combined, features = "nCount_RNA", ncol = 1, pt.size = 0.01)
+VlnPlot(scData.combined, features = "nFeature_RNA", ncol = 1, pt.size = 0.01)
+```
+
+```{r}
+FeaturePlot(object = scData.combined,  features = "nFeature_RNA", reduction="umap", label=T)
+```
+
+
+
+<!-- ## Known markers -->
+
+<!-- CD14lowCD16high - non-classical MoMF     -->
+<!-- CD16 - Fcgr4 (FCGR3A/B)   -->
+<!-- Fcgr1 (Cd64) MoMF   -->
+<!-- Spn (Cd43) classical Mo   -->
+<!-- Cd11b = Itgam   -->
+
+<!-- ```{r, fig.height=10, fig.width=10} -->
+<!-- sel_genes = toupper(c("Cd68","Csf1r","Cx3cr1","Cd14","Fcgr3A","Itgam","Ccr2","Adgre4","Adgre1","Fcgr1","Spn","Ly6c","Ly6a")) -->
+
+<!-- sel_mat = Assays(subset(scData.combined, features=sel_genes), "RNA")@data -->
+
+<!-- sel_mat_ts = reshape2::melt(as.matrix(sel_mat)) -->
+<!-- colnames(sel_mat_ts) = c("Gene","CellID","Expression") -->
+<!-- meta = scData.combined@meta.data -->
+<!-- sel_mat_ts = merge(sel_mat_ts, meta[,c("seurat_clusters","group")], by.x="CellID",by.y=0, all.x=T, sort=F) -->
+
+<!-- sel_mat_ts$Gene = gsub("FCGR3A","Cd16",gsub("Itgam","Cd11b",gsub("Adgre4","FIRE",gsub("Adgre1","F4/80",gsub("Fcgr1","Cd64",gsub("Spn","Cd43",sel_mat_ts$Gene)))))) -->
+
+<!-- ggplot(sel_mat_ts, aes(x=seurat_clusters,y=Expression, fill="black")) + geom_violin(scale = "width") + facet_grid(Gene ~ .) + theme(axis.text.x = element_text(angle=90, hjust=1)) + xlab("")  -->
+
+<!-- ``` -->
+
+# Final cluster assigment
+
+```{r}
+cluster_assignment = read.table("Cluster_assignments/BCN_NAFLD_Clusters_with_Ramachandran_2022-01-10.txt", sep="\t",header=T, stringsAsFactors = F)
+options(width = 180)
+print(cluster_assignment)
+rownames(cluster_assignment) = as.character(cluster_assignment$ClusterID)
+scData.combined = AddMetaData(scData.combined, cluster_assignment[as.character(scData.combined$seurat_clusters),"Label"], col.name = "cluster_label")
+scData.combined = AddMetaData(scData.combined, cluster_assignment[as.character(scData.combined$seurat_clusters),"Type"], col.name = "cluster_type")
+```
+
+```{r, fig.width=14, fig.height=8}
+scData.combined = SetIdent(scData.combined, value="cluster_label" )
+p = DimPlot(scData.combined, reduction = "umap", label = TRUE)
+print(p)
+```
+
+<!-- ```{r} -->
+<!-- pdf(file.path(result_folder, "UMAP_annotated.pdf"), width=14, height=8) -->
+<!-- print(p) -->
+<!-- dev.off() -->
+<!-- ``` -->
+
+## Distribution of clusters within samples
+
+
+```{r}
+m = table(scData.combined$cluster_label, scData.combined$sample_label)
+m
+```
+
+```{r, fig.width=10,fig.height=7}
+mm  = as.matrix.data.frame(m)
+colnames(mm) = colnames(m)
+rownames(mm) = rownames(m)
+
+mm_r = sweep(mm, 2, apply(mm,2,sum), "/")
+
+pheatmap(mm_r, cluster_cols = F, cluster_rows=F, main="Proportion of each cluster per sample")
+```
+
+
+## Distribution of clusters within conditions
+
+```{r}
+m = table(scData.combined$cluster_label, scData.combined$group)
+m
+```
+
+```{r}
+mm  = as.matrix.data.frame(m)
+colnames(mm) = colnames(m)
+rownames(mm) = rownames(m)
+
+mm_r = sweep(mm, 2, apply(mm,2,sum), "/")
+options(width=200)
+kable(round(mm_r,3))
+```
+
+
+```{r, fig.width=10,fig.height=7}
+pheatmap(mm_r, cluster_cols = F, cluster_rows=F)
+```
+
+```{r, fig.width=14, fig.height=8}
+mm_rel_ts = reshape2::melt(t(mm_r))
+colnames(mm_rel_ts) = c("Group","Cluster","Proportion_cells")
+mm_rel_ts$Cluster = factor(paste0("",mm_rel_ts$Cluster))
+
+mm_rel_ts$Tissue = ifelse(grepl("BM|Knochenmark", mm_rel_ts$Group), "BM","Liver")
+
+ggplot(mm_rel_ts, aes(x=Group, fill = Tissue, y = Proportion_cells, group=Cluster)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=60, hjust=1)) + facet_wrap(~ Cluster )
+
+```
+
+
+## Known markers
+
+CD14lowCD16high - non-classical MoMF
+CD16 - Fcgr4 (FCGR3A/B)
+Fcgr1 (Cd64) MoMF
+Spn (Cd43) classical Mo
+Cd11b = Itgam
+
+```{r, fig.height=10, fig.width=10}
+sel_genes = toupper(c("Cd68","Csf1r","Cx3cr1","Cd14","FCGR3A","Itgam","Ccr2","Adgre4","Adgre1","Fcgr1","Spn","Ly6c","Ly6a"))
+
+sel_mat = Assays(subset(scData.combined, features=sel_genes), "RNA")@data
+
+sel_mat_ts = reshape2::melt(as.matrix(sel_mat))
+colnames(sel_mat_ts) = c("Gene","CellID","Expression")
+meta = scData.combined@meta.data
+sel_mat_ts = merge(sel_mat_ts, meta[,c("cluster_label","group")], by.x="CellID",by.y=0, all.x=T, sort=F)
+
+sel_mat_ts$Gene = gsub("FCGR3A","Cd16",gsub("Itgam","Cd11b",gsub("Adgre4","FIRE",gsub("Adgre1","F4/80",gsub("Fcgr1","Cd64",gsub("Spn","Cd43",sel_mat_ts$Gene))))))
+
+ggplot(sel_mat_ts, aes(x=cluster_label,y=Expression, fill="black")) + geom_violin(scale = "width") + facet_grid(Gene ~ .) + theme(axis.text.x = element_text(angle=90, hjust=1)) + xlab("")
+
+```
+
+
+```{r}
+save(scData.combined,file=file.path(data_storage_folder, "BCN_NAFLD_Ramachandran_CD45_MoMF_DC_only.combined_cluster_annotated.RData"))
+```
+
+
+# Export
+
+Cluster assignations have been exported to file *Metadata_complete_Ramachandran_CD45.txt*.
+
+```{r}
+tmp = scData.combined@meta.data
+tmp$cell_id = rownames(tmp)
+write.table( tmp , file="Metadata_complete_Ramachandran_CD45.txt", sep="\t", row.names = F, quote = F)
+```
+
+
+## Cluster markers - annotated
+
+Annotated cluster markers have been stored in file *`r file.path(result_folder,"Cluster_markers_annotated.xlsx")`*
+
+
+```{r}
+outfile = file.path(result_folder,"Cluster_markers_NAFLD_Ramachandran_CD45_annotated.xlsx")
+cluster_markers_anno = merge(cluster_markers, cluster_assignment[, c("ClusterID","Label")], by.x="cluster", by.y="ClusterID", all.x=T, sort=F)
+write_xlsx(cluster_markers_anno, path=outfile)
+```
+
+<!-- ## Cluster enriched genes - annotated -->
+
+<!-- Enriched gene sets for cluster markers have been stored in file *`r file.path(result_folder,paste0("DGE_",title,"_enrichments_all_annotated.xlsx"))`* -->
+
+<!-- ```{r, eval=FALSE} -->
+
+<!--  tmp = AnnotationDbi::select(org.Hs.eg.db, keys=rownames(scData.combined@assays$RNA), keytype = "SYMBOL", columns="ENTREZID") -->
+
+<!-- gs2e = tapply(tmp$ENTREZID, tmp$SYMBOL, paste, collapse=",") -->
+<!-- e2gs = tapply(tmp$SYMBOL, tmp$ENTREZID, paste, collapse=",") -->
+
+<!-- #genes_by_class = split(gs2e[curr_dge_tab$GeneSymbol], factor(curr_dge_tab$gene_group)) -->
+<!-- #genes_by_class = lapply(genes_by_class, function(x) unique(x[!is.na(x)])) -->
+
+<!-- HM_cluster_enrichment = do.call(rbind, lapply(all_enrichments, function(x) x@compareClusterResult) ) -->
+
+<!-- HM_cluster_enrichment$GeneSymbols = Map(function(x) {sapply(strsplit(x,"/"), function(y) sort(paste(e2gs[y], collapse=",")))}, HM_cluster_enrichment$geneID ) -->
+<!-- cc = colnames(HM_cluster_enrichment) -->
+<!-- sel_cols = c("Cluster","database") -->
+<!-- sel_cols = append(sel_cols, cc[!cc %in% sel_cols & !cc =="geneID"]) -->
+
+<!-- tmp <- group_split(HM_cluster_enrichment %>% group_by(Cluster)) -->
+<!-- tmp2 <- lapply(tmp, function(x) x[order(x$database, x$pvalue), c("Cluster","database","Description","GeneRatio","BgRatio","pvalue","p.adjust","qvalue","Count","GeneSymbols")] ) -->
+<!-- tmp2 <- lapply(tmp2, function(x) {x$GeneSymbols = unlist(lapply(x$GeneSymbols, paste, collapse=", ")) ; return(x) } ) -->
+<!-- tmp2 <- lapply(tmp2, function(x) {x$Cluster_Label = cluster_assignment[ unlist(sapply(strsplit(as.character(x$Cluster),"_"),`[`,1) ), "Label"]; return(x) } ) -->
+
+<!-- names(tmp2) = unlist(lapply(tmp2, function(x) unique(as.character(x$Cluster_Label)))) -->
+<!-- tmp2 = tmp2[order(names(tmp2))] -->
+
+<!-- write_xlsx(tmp2, path=file.path(result_folder,paste0("DGE_",title,"_enrichments_all_annotated.xlsx"))) -->
+<!-- ``` -->
+
+
+<!-- ## Top 30 marker genes -->
+
+<!-- Feature and violin plots for the top 30 marker genes of each cluster are written to file *Top30_Cluster_Markers.pdf* -->
+
+<!-- ```{r} -->
+
+<!-- plot_genes2 <- function(dataset, genes) { -->
+
+<!--   all_genes =rownames(dataset@assays$RNA) -->
+
+<!--   for (g in sort(names(genes))) { -->
+<!--     if (!g %in% all_genes) { -->
+<!--       print(paste0("Gene ",g," has no data (possibly filtered out).")) -->
+<!--       next -->
+<!--     } else { -->
+<!--         p1  =FeaturePlot(object = dataset, features = g, reduction="umap", label = T, pt.size = 1, order=T) + ggtitle(paste0(g," (",genes[g],")")) -->
+<!--         p2 = VlnPlot(dataset, features = g, ncol = 1, pt.size = 0.01) + NoLegend() + ggtitle(paste0(g," (",genes[g],")")) -->
+<!--         print(plot_grid(p1,p2, ncol=2,align="h")) -->
+<!--     } -->
+<!--   } -->
+<!-- } -->
+<!-- ``` -->
+
+
+<!-- ```{r, fig.width=14, fig.height=6} -->
+<!-- cluster_markers %>% -->
+<!--     group_by(cluster) %>% -->
+<!--     arrange(desc(avg_log2FC)) %>% -->
+<!--     top_n(n = 30, wt = avg_log2FC) -> top30 -->
+
+<!-- top30$Label = cluster_assignment[as.character(top30$cluster), "Label"]  -->
+
+<!-- marker_by_cluster = tapply(top30$Label, top30$gene, function(x) paste(unique(sort(x)), collapse=", ")) -->
+
+<!-- DefaultAssay(scData.combined) <- "RNA" -->
+<!-- scData.combined$cluster_label = factor(scData.combined$cluster_label, levels=sort(unique(scData.combined$cluster_label))) -->
+<!-- scData.combined <- SetIdent(scData.combined, value="cluster_label" ) -->
+
+
+<!-- png(file.path(result_folder, "Top30_Cluster_Markers_%04d.png"), width=1400, height=600) -->
+<!-- plot_genes2(scData.combined, marker_by_cluster) -->
+<!-- dev.off() -->
+
+<!-- pngFiles = list.files(result_folder, pattern="*.png", full.names = T) -->
+<!-- # code from https://jonkimanalyze.wordpress.com/2014/07/24/r-compile-png-files-into-pdf/ -->
+<!-- pdf(file.path(result_folder, "Top30_Cluster_Markers.pdf"), width = 14, height = 6) -->
+<!-- n <- length(pngFiles) -->
+<!-- for( i in 1:n) { -->
+<!--   pngFile <- pngFiles[i] -->
+<!--   pngRaster <- readPNG(pngFile) -->
+<!--   grid.raster(pngRaster) -->
+<!--   if (i < n) grid.newpage() #plot.new() -->
+<!-- } -->
+<!-- dev.off() -->
+
+<!-- ``` -->
+
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

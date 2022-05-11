@@ -221,14 +221,6 @@ save(scData_MoMF.DC,file=file.path(data_storage_folder, "scData_NAFLD_Ramachandr
 ```
 
 
-
-
-```{r}
-all_clusters_tab = unique(as.data.frame(scData_MoMF.DC@meta.data[, c("seurat_clusters", "cluster_label", "cluster_type")]))
-rownames(all_clusters_tab) = as.character(all_clusters_tab$seurat_clusters)
-all_clusters_tab = all_clusters_tab[order(all_clusters_tab$seurat_clusters),]
-```
-
 ## Comparison with original BCN adipose tissue myeloid cells
 
 ```{r}
@@ -245,8 +237,6 @@ kable(m)
 pheatmap(m, main="Absolute cell numbers")
 pheatmap(sweep(m, 1, apply(m,1,sum),"/"), main="Relative cell numbers (columns: complete DS, rows: adipose tissue only). Color: proportion of adipose cells in cluster", cluster_cols=F)
 ```
-
-
 
 # Cluster marker genes
 

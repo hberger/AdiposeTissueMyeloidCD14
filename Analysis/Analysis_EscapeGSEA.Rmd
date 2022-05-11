@@ -1,0 +1,1042 @@
+---
+title: "Analysis only in MoMF and DC, part 2 - DGE and Functional Enrichment"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+library(gridExtra)
+
+library(pheatmap)
+
+library(msigdbr)
+library(escape)
+library(limma)
+library(GSEABase)
+
+library(dittoSeq)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-04-06")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+library(future.apply)
+plan(multicore, workers=4)
+
+rerun_analyses = T
+```
+
+```{r}
+load(file.path(data_storage_folder, "Liver_and_BM_Controls_and_CCl4.combined.RData") )
+```
+
+
+```{r, eval=FALSE}
+anno_cols = list("direction"=c("UP"="red","DOWN"="blue"), 
+                 "condition"=c( "CD_II"="green2","BM_DEN_CCL4"="red1","BM_I"="blue") )
+
+condition_order = 1:length(unique(scData.combined$group_label))
+names(condition_order) = c("BM_I","BM_DEN_CCL4","CD_II")
+
+group_levels_ordered = names(condition_order)
+
+cluster_order = 1:length(unique(scData.combined$cluster_label))
+names(cluster_order) = sort(unique(scData.combined$cluster_label))
+
+final_class_order = 1:(length(condition_order)*length(cluster_order))
+names(final_class_order) = paste0(rep(names(cluster_order), each=length(condition_order)),"_", names(condition_order))
+
+```
+
+```{r, eval=FALSE}
+dge_escape_scores <- function(es_a) {
+  sel_cols = colnames(es_a)[!colnames(es_a) %in% c(colnames(scData.combined@meta.data), "Row.names")]
+  es_m = as.matrix(es_a[,sel_cols])
+  
+  es_a$condition_short = ifelse(es_a$group_label %in% c("CD_II"), "Control_Liver", es_a$group_label )
+  es_a$condition_short <- factor(es_a$condition_short, levels=c("BM_I","BM_DEN_CCL4","Control_Liver"))
+  
+  all_clusters = sort(unique(es_a$cluster_label))
+  
+  all_results = list()
+  
+  for (cc in all_clusters) {
+    incl_flag = (es_a$cluster_label == cc)
+    es_m_sel = es_m[incl_flag, ]
+    
+    cond = es_a$condition_short[incl_flag]
+    
+    design <- model.matrix(~ 0 + cond)
+    colnames(design) <- gsub("^cond","",colnames(design))
+    fit <- lmFit(t(es_m_sel), design)
+    
+    # quick and dirty fix for cluster not in control liver
+    NA_coeff = apply(fit$coefficients, 2, function(x) all(is.na(x)))
+    if(any(NA_coeff)) {
+        contrast_mat = makeContrasts(
+                BM_DEN_CCl4_vs_untreated = BM_DEN_CCL4 - BM_I,
+                levels = design)
+    } else {
+        contrast_mat = makeContrasts(
+                BM_DEN_CCl4_vs_untreated = BM_DEN_CCL4 - BM_I,
+                Ctrl_Liver_vs_uBM = Control_Liver - BM_I,
+                levels = design)
+    }
+    
+    fit2 = contrasts.fit(fit, contrast_mat)
+    fit2 = eBayes(fit2)
+    
+    for (co in colnames(fit2$coefficients)) {
+      r = topTable(fit2, coef=co, adjust="BH", number = ncol(es_a))
+      r$cluster = cc
+      r$comparison = co
+      r$geneset = rownames(r)
+      c_name = paste0(co, "_", cc)
+      all_results[[c_name]] = r
+    }
+  
+  }
+  
+  all_results_df = do.call(rbind, all_results)
+  return(all_results_df)
+}
+```
+
+
+# MSigDB Hallmark Collection
+
+```{r,eval=FALSE}
+gs <- getGeneSets(library="H", species = "Mus musculus")
+
+data_file = file.path(data_storage_folder, "MSigDB H Escape.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+  m = scData.combined@meta.data
+  m = m[,!grepl("HALLMARK_", colnames(m))]
+  
+  es_a = merge(es, m, by=0, all.x=T, sort=F)
+
+  save(es_a, file=data_file)
+  
+} else {
+  load(data_file)
+}
+rownames(es_a) = es_a$Row.names
+```
+
+<!-- ## Differential Gene Set Expression -->
+
+<!-- ```{r} -->
+<!-- all_results_df = dge_escape_scores(es_a) -->
+<!-- ``` -->
+
+
+<!-- ## Heatmaps -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- tmp = as.matrix(es_a[,2:(length(gs)+1)]) -->
+
+<!-- es_a_avg = avereps(tmp, paste0(es_a$cluster_label,"_", es_a$group_label)) -->
+
+<!-- n_raw = colnames(es_a_avg) -->
+<!-- n_raw_split = strsplit(n_raw,"_") -->
+<!-- row_anno = data.frame(row.names = n_raw, treatment = unlist(sapply(n_raw_split, `[`,2)), direction =  unlist(sapply(n_raw_split, `[`,8))) -->
+
+<!-- c_raw = rownames(es_a_avg) -->
+<!-- c_raw_split = strsplit(c_raw,"_") -->
+<!-- col_anno = data.frame(row.names=c_raw, condition=unlist(sapply(c_raw_split, function(x) paste(x[2:length(x)], collapse="_")))) -->
+
+<!-- class_num = length(unique(col_anno$condition)) -->
+<!-- type_num = length(unique(es_a$cluster_label)) -->
+
+<!-- m_all = t(es_a_avg) -->
+<!-- pheatmap(m_all, scale="row", annotation_row = row_anno, annotation_colors = anno_cols, annotation_col = col_anno) -->
+
+<!-- tmp = m_all -->
+<!-- pheatmap(tmp[, order(final_class_order[colnames(tmp)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno) -->
+
+
+<!-- # m_sel = m_all[grepl("_72h_.+_UP", rownames(m_all)),] -->
+<!-- # pheatmap(m_sel, scale="row", annotation_row = row_anno, annotation_colors = anno_cols, annotation_col = col_anno) -->
+<!-- #  -->
+<!-- # tmp = m_sel -->
+<!-- # pheatmap(tmp[, order(final_class_order[colnames(tmp)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno) -->
+<!-- #  -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- m_sw = as.matrix(tmp2[, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II") -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of BM_I, only significant diff., both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "BM_DEN_CCl4_vs_untreated") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in untr DEN_CCL4_BM vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "Ctrl_Liver_vs_uBM") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in Control Liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+
+<!-- ## Box-/Violin plots -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = m_ts -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "Vhc_vs_ctr") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in Vhc vs Control") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "CVC_vs_Vhc") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in CVC vs Vhc") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+# MSigDB CP KEGG/Reactome
+
+
+```{r}
+
+gs_cp =  getGeneSets(library="C2", species = "Mus musculus")
+
+```
+
+
+```{r,eval=FALSE}
+gs <- gs_cp
+
+data_file = file.path(data_storage_folder, "MSigDB C2 Escape.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+  m = scData.combined@meta.data
+  
+  es_a = merge(es, m, by=0, all.x=T, sort=F)
+
+  save(es_a, file=data_file)
+  
+} else {
+  load(data_file)
+}
+rownames(es_a) = es_a$Row.names
+```
+
+
+<!-- ## Differential Gene Set Expression -->
+
+<!-- ```{r} -->
+<!-- coln_meta = colnames(scData.combined@meta.data) -->
+<!-- sel_cols = colnames(es_a)[!colnames(es_a) %in% c("Row.names", coln_meta)] -->
+<!-- es_m = as.matrix(es_a[,sel_cols]) -->
+
+<!-- es_a$condition_short = ifelse(es_a$group_label %in% c("CD_II"), "Control_Liver", es_a$group_label ) -->
+<!-- es_a$condition_short <- factor(es_a$condition_short, levels=c("BM_I","BM_DEN_CCl4","Control_Liver")) -->
+
+<!-- all_clusters = sort(unique(es_a$cluster_label)) -->
+
+<!-- all_results = list() -->
+
+<!-- for (cc in all_clusters) { -->
+<!--   incl_flag = (es_a$cluster_label == cc) -->
+<!--   es_m_sel = es_m[incl_flag, ] -->
+
+<!--   cond = es_a$condition_short[incl_flag] -->
+
+<!--   design <- model.matrix(~ 0 + cond) -->
+<!--   colnames(design) <- gsub("^cond","",colnames(design)) -->
+<!--   fit <- lmFit(t(es_m_sel), design) -->
+
+
+<!--   contrast_mat = makeContrasts( -->
+<!--               BM_DEN_CCl4_vs_untreated = BM_DEN_CCl4 - BM_I, -->
+<!--               Ctrl_Liver_vs_uBM = Control_Liver - BM_I, -->
+<!--               levels = design) -->
+
+<!--   fit2 = contrasts.fit(fit, contrast_mat) -->
+<!--   fit2 = eBayes(fit2) -->
+
+
+
+<!--   for (co in colnames(fit2$coefficients)) { -->
+<!--     r = topTable(fit2, coef=co, adjust="BH", number = ncol(es_a)) -->
+<!--     r$cluster = cc -->
+<!--     r$comparison = co -->
+<!--     r$geneset = rownames(r) -->
+<!--     c_name = paste0(co, "_", cc) -->
+<!--     all_results[[c_name]] = r -->
+<!--   } -->
+
+<!-- } -->
+
+<!-- all_results_df = do.call(rbind, all_results) -->
+
+<!-- ``` -->
+
+
+<!-- ## Heatmaps -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+
+<!-- es_a_avg = avereps(es_m, paste0(es_a$cluster_label,"_", es_a$group_label)) -->
+<!-- es_a_avg = es_a_avg[!grepl("DEN_CCl4_Vhc_24", rownames(es_a_avg)),] -->
+
+<!-- # n_raw = colnames(es_a_avg) -->
+<!-- # n_raw_split = strsplit(n_raw,"_") -->
+<!-- # row_anno = data.frame(row.names = n_raw, treatment = unlist(sapply(n_raw_split, `[`,2)), direction =  unlist(sapply(n_raw_split, `[`,8))) -->
+
+<!-- c_raw = rownames(es_a_avg) -->
+<!-- c_raw_split = strsplit(c_raw,"_") -->
+<!-- col_anno = data.frame(row.names=c_raw, condition=unlist(sapply(c_raw_split, function(x) paste(x[2:length(x)], collapse="_")))) -->
+
+<!-- class_num = length(unique(col_anno$condition)) -->
+<!-- type_num = length(unique(es_a$cluster_label)) -->
+
+
+<!-- m_all = t(es_a_avg) -->
+<!-- pheatmap(m_all, scale="row", annotation_colors = anno_cols, annotation_col = col_anno, show_rownames = F) -->
+
+<!-- tmp = m_all -->
+<!-- pheatmap(tmp[, order(final_class_order[colnames(tmp)])], scale="row", cluster_cols = F, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, show_rownames = F) -->
+
+<!-- # m_ts = melt(m_sel) -->
+<!-- # colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- # m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- # m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- # m_ts$control = (m_ts$condition %in% c("CD_I","CD_II")) -->
+<!-- #  -->
+<!-- # m_ts = as.data.table(m_ts) -->
+<!-- #  -->
+<!-- # m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- # m_ts[, value_norm:=value-control_avg] -->
+<!-- #  -->
+<!-- # tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+<!-- #  -->
+<!-- # m_sw = as.matrix(tmp2[, 2:ncol(tmp2)]) -->
+<!-- # new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- # rownames(m_sw) = tmp2$geneset -->
+<!-- # pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II") -->
+<!-- #  -->
+
+
+<!-- ``` -->
+
+
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- write_xlsx(sig_gs_comps, path=file.path(result_folder, "Escape_C2_DE_Pathways.xlsx")) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of BM_I, only significant diff., both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "Vhc_vs_ctr") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in untr DEN_CCL4_BM vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "CVC_vs_Vhc") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in Control Liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+<!-- ## Box-/Violin plots -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("CD_I","CD_II")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "Vhc_vs_ctr") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("CD_I","CD_II")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in Vhc vs Control") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "CVC_vs_Vhc") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("CD_I","CD_II")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in CVC vs Vhc") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+# MAF Resource
+
+
+```{r}
+# differentially expressed genes from macrophage stimulations in GSE47189
+maf_resource_env = new.env()
+load("../../GSE47189_MacrophageResource/DGE_results_Macrophages.Rdata", envir = maf_resource_env)
+
+all_maf_dge = get("all_results", maf_resource_env)
+```
+
+```{r}
+homologene_human_mouse = fread("../../../References/HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt")
+all_entrez_ids = data.frame(EntrezID=unique(all_maf_dge[[1]]$ENTREZID))
+all_symbols = data.frame(GeneSymbol=unique(all_maf_dge[[1]]$SYMBOL))
+a1 = merge(all_entrez_ids, homologene_human_mouse[,c("entrez_1","symbol_1","entrez_2","symbol_2"), with=F], by.x="EntrezID", by.y="entrez_1", all.x=T, sort=F)
+
+human_to_mouse=a1
+human_to_mouse = subset(human_to_mouse, !is.na(entrez_2) & !is.na(symbol_2) & !symbol_2 == "" & !is.na(EntrezID))
+rownames(human_to_mouse) = human_to_mouse$EntrezID
+```
+
+
+<!-- ```{r} -->
+<!-- sel_genesets = c("GM.CSF_IFNg_72h_vs_GM.CSF_con_0h_UP", -->
+<!-- "GM.CSF_IFNg_72h_vs_GM.CSF_con_0h_DOWN", -->
+<!-- "GM.CSF_IFNg_12h_vs_GM.CSF_con_0h_UP", -->
+<!-- "GM.CSF_IFNg_12h_vs_GM.CSF_con_0h_DOWN", -->
+<!-- "GM.CSF_IFNg_2h_vs_GM.CSF_con_0h_UP", -->
+<!-- "GM.CSF_IFNg_2h_vs_GM.CSF_con_0h_DOWN", -->
+<!-- "GM.CSF_IL4_72h_vs_GM.CSF_con_0h_UP", -->
+<!-- "GM.CSF_IL4_72h_vs_GM.CSF_con_0h_DOWN", -->
+<!-- "M.CSF_IL4_72h_vs_M.CSF_con_0h_UP", -->
+<!-- "M.CSF_IL4_72h_vs_M.CSF_con_0h_DOWN" -->
+<!-- ) -->
+
+<!-- ``` -->
+
+
+```{r}
+maf_res_top_lists = list()
+gs_lists = list()
+# select differentially expressed genes and convert to mouse Entrez IDs
+for (n in names(all_maf_dge)) {
+  tmp = subset(all_maf_dge[[n]], logFC > 1 & adj.P.Val < 0.05 & !is.na(ENTREZID))$ENTREZID
+  if(length(tmp)>0) {
+    gs_id = paste0(n,"_UP")
+    tmp2 = data.frame(gs_name = gs_id, GeneSymbol = human_to_mouse[tmp,"symbol_2"], stringsAsFactors = F)
+    maf_res_top_lists[[gs_id]] = subset(tmp2, !is.na(GeneSymbol))
+    
+    gs = GeneSet(unique(tmp2$GeneSymbol), setName = gs_id)
+    gs_lists[[gs_id]] = gs
+  }
+    
+  tmp = subset(all_maf_dge[[n]], logFC < -1 & adj.P.Val < 0.05 & !is.na(ENTREZID))$ENTREZID
+  if(length(tmp)>0) {
+    gs_id = paste0(n,"_DOWN")
+    tmp2 = data.frame(gs_name = gs_id, GeneSymbol = human_to_mouse[tmp,"symbol_2"], stringsAsFactors = F)
+    maf_res_top_lists[[gs_id]] = subset(tmp2, !is.na(GeneSymbol))
+    
+    gs = GeneSet(unique(tmp2$GeneSymbol), setName = gs_id)
+    gs_lists[[gs_id]] = gs
+  }
+}
+
+maf_ref_top_lists_gs = do.call(rbind, maf_res_top_lists)
+maf_ref_top_lists_gs = subset(maf_ref_top_lists_gs, !is.na(GeneSymbol))
+rownames(maf_ref_top_lists_gs) <- NULL
+
+gs_maf = GeneSetCollection(gs_lists)
+
+```
+
+
+```{r}
+gs <- gs_maf
+
+data_file = file.path(data_storage_folder, "MSigDB Maf_Resource Escape.Rdata")
+
+if(rerun_analyses) {
+  es <- enrichIt(obj = scData.combined, gene.sets = gs, groups = 1000, cores = 4)
+  m = scData.combined@meta.data
+  
+  es_a = merge(es, m, by=0, all.x=T, sort=F)
+
+  save(es_a, file=data_file)
+  
+} else {
+  load(data_file)
+}
+rownames(es_a) = es_a$Row.names
+```
+
+
+<!-- ## Differential Gene Set Expression -->
+
+<!-- ```{r} -->
+<!-- es_m = as.matrix(es_a[!colnames(es_a) %in% c(colnames(scData.combined@meta.data), "Row.names")]) -->
+
+<!-- es_a$condition_short = ifelse(es_a$group_label %in% c("CD_II"), "Control_Liver", es_a$group_label ) -->
+<!-- es_a$condition_short <- factor(es_a$condition_short, levels=c("BM_I","BM_DEN_CCl4","Control_Liver")) -->
+
+<!-- all_clusters = sort(unique(es_a$cluster_label)) -->
+
+<!-- all_results = list() -->
+
+<!-- for (cc in all_clusters) { -->
+<!--   incl_flag = (es_a$cluster_label == cc) -->
+<!--   es_m_sel = es_m[incl_flag, ] -->
+
+<!--   cond = es_a$condition_short[incl_flag] -->
+
+<!--   design <- model.matrix(~ 0 + cond) -->
+<!--   colnames(design) <- gsub("^cond","",colnames(design)) -->
+<!--   fit <- lmFit(t(es_m_sel), design) -->
+
+
+<!--   contrast_mat = makeContrasts( -->
+<!--               BM_DEN_CCl4_vs_untreated = BM_DEN_CCl4 - BM_I, -->
+<!--               Ctrl_Liver_vs_uBM = Control_Liver - BM_I, -->
+<!--               levels = design) -->
+
+<!--   fit2 = contrasts.fit(fit, contrast_mat) -->
+<!--   fit2 = eBayes(fit2) -->
+
+
+
+<!--   for (co in colnames(fit2$coefficients)) { -->
+<!--     r = topTable(fit2, coef=co, adjust="BH", number = ncol(es_a)) -->
+<!--     r$cluster = cc -->
+<!--     r$comparison = co -->
+<!--     r$geneset = rownames(r) -->
+<!--     c_name = paste0(co, "_", cc) -->
+<!--     all_results[[c_name]] = r -->
+<!--   } -->
+
+<!-- } -->
+
+<!-- all_results_df = do.call(rbind, all_results) -->
+
+<!-- ``` -->
+
+<!-- ## Heatmaps -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- tmp = as.matrix(es_a[,2:(length(gs)+1)]) -->
+
+<!-- es_a_avg = avereps(tmp, paste0(es_a$cluster_label,"_", es_a$group_label)) -->
+
+<!-- n_raw = colnames(es_a_avg) -->
+<!-- n_raw_split = strsplit(n_raw,"_") -->
+<!-- row_anno = data.frame(row.names = n_raw, treatment = unlist(sapply(n_raw_split, `[`,2)), direction =  unlist(sapply(n_raw_split, `[`,8))) -->
+
+<!-- c_raw = rownames(es_a_avg) -->
+<!-- c_raw_split = strsplit(c_raw,"_") -->
+<!-- col_anno = data.frame(row.names=c_raw, condition=unlist(sapply(c_raw_split, function(x) paste(x[2:length(x)], collapse="_")))) -->
+
+<!-- class_num = length(unique(col_anno$condition)) -->
+<!-- type_num = length(unique(es_a$cluster_label)) -->
+
+
+<!-- m_all = t(es_a_avg) -->
+<!-- pheatmap(m_all, scale="row", annotation_row = row_anno, annotation_colors = anno_cols, annotation_col = col_anno) -->
+
+<!-- tmp = m_all -->
+<!-- pheatmap(tmp[, order(final_class_order[colnames(tmp)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno) -->
+
+
+<!-- m_sel = m_all[grepl("_72h_.+_UP", rownames(m_all)),] -->
+<!-- pheatmap(m_sel, scale="row", annotation_row = row_anno, annotation_colors = anno_cols, annotation_col = col_anno) -->
+
+<!-- tmp = m_sel -->
+<!-- pheatmap(tmp[, order(final_class_order[colnames(tmp)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno) -->
+
+
+<!-- m_ts = melt(m_sel) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- m_sw = as.matrix(tmp2[, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of BM_I, only significant diff., both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "Vhc_vs_ctr") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in untr DEN_CCL4_BM vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05 & comparison == "CVC_vs_Vhc") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(m_all) -->
+<!-- colnames(m_ts) = c("geneset","cluster_group", "value") -->
+<!-- m_ts$cluster = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), `[`,1)) -->
+<!-- m_ts$condition = unlist(sapply(strsplit(as.character(m_ts$cluster_group),"_"), function(x) paste(x[2:length(x)], collapse="_"))) -->
+<!-- m_ts$control = (m_ts$condition %in% c("BM_I")) -->
+
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- tmp2 = dcast(m_ts, geneset ~ cluster_group, value.var = "value_norm") -->
+
+<!-- row_anno = row_anno[, c("direction"), drop=F] -->
+
+<!-- m_sw = as.matrix(tmp2[sig_gs, 2:ncol(tmp2)]) -->
+<!-- new_breaks = c(-5,-3,seq(-2,2,4/96),3,5) -->
+<!-- rownames(m_sw) = tmp2[sig_gs,]$geneset -->
+<!-- pheatmap(m_sw[, order(final_class_order[colnames(m_sw)])], scale="row", cluster_cols = F, annotation_row = row_anno, annotation_colors = anno_cols, gaps_col = ((1:type_num)*class_num)[1:(type_num-1)], annotation_col = col_anno, breaks=new_breaks, main="Normalized to mean of Control I/II, only significant diff. in Control Liver vs. untr BM", fontsize_row = 14) -->
+
+<!-- ``` -->
+
+<!-- ## Box-/Violin plots -->
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05) -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in both untr DEN_CCL4_BM vs. untr BM and Control liver vs. untr BM") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "Vhc_vs_ctr") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in Vhc vs Control") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r, fig.height=16, fig.width=24, warning=FALSE} -->
+<!-- sig_gs_comps = subset(all_results_df, abs(logFC) > 0.05 & adj.P.Val < 0.05  & comparison == "CVC_vs_Vhc") -->
+<!-- sig_gs = unique(sig_gs_comps$geneset) -->
+
+<!-- m_ts = melt(es_m) -->
+<!-- colnames(m_ts) = c("cellid","geneset", "value") -->
+<!-- m_ts = as.data.table(m_ts) -->
+
+<!-- m_ts[, cluster:=es_a[cellid,"cluster_label"] ] -->
+<!-- m_ts[, condition:=factor(es_a[cellid,"group_label"], levels=group_levels_ordered) ] -->
+<!-- m_ts[, control := (condition %in% c("BM_I")) ] -->
+
+<!-- m_ts[, control_avg:=mean(ifelse(control, value,NA), na.rm=T), by=c("cluster", "geneset")] -->
+<!-- m_ts[, value_norm:=value-control_avg] -->
+
+<!-- m_ts_sel = subset(m_ts, geneset %in% sig_gs & condition != "DEN_CCl4_Vhc_24") -->
+
+<!-- all_plots = list() -->
+<!-- all_sel_genesets = unique(m_ts_sel$geneset) -->
+<!-- for (n in all_sel_genesets) { -->
+<!--   p = ggplot(subset(m_ts_sel, geneset==n), aes(x=cluster, fill=condition, y=value_norm), ) + geom_boxplot(outlier.size = 0.1) + facet_wrap(~geneset, ncol=4) + geom_hline(yintercept = 0, col="red") + theme(axis.text.x = element_text(angle=90, hjust=1)) + ggtitle("Significant gene sets in CVC vs Vhc") -->
+<!--   all_plots[[n]] = p -->
+<!-- } -->
+
+<!-- marrangeGrob(all_plots, ncol=2, nrow = 2) -->
+
+<!-- ``` -->
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```

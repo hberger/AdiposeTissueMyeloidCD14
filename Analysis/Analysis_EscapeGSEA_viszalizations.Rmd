@@ -1,0 +1,61 @@
+---
+title: "Analysis Escape visualizations"
+author: "Hilmar Berger"
+
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message = FALSE}
+library(Seurat)
+library(escape)
+library(msigdbr)
+
+library(ggplot2)
+library(cowplot)
+
+library(Nebulosa)
+
+data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+```
+
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+
+load(file.path(data_storage_folder, "MSigDB SC_Signatures_Escape_BCN.Rdata"))
+all_gs_names = colnames(es)
+```
+
+
+```{r, fig.width=12, fig.height=7}
+es_ordered = es[Cells(scData.combined),]
+
+all_new_cols = c()
+for (n in all_gs_names) {
+  nc = make.names(n)
+  scData.combined <- AddMetaData(scData.combined, es_ordered[, n], col.name = nc)
+  all_new_cols = append(all_new_cols, nc)
+  
+  p1 = FeaturePlot(scData.combined, features = nc, order=T, label=T)
+  p2 = VlnPlot(scData.combined, features=nc) + NoLegend()
+  print(plot_grid(p1,p2))
+  print(plot_density(scData.combined, nc))
+  
+  
+}
+
+```
+
