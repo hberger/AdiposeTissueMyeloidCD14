@@ -1,0 +1,152 @@
+---
+title: "Pseudotime estimation"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+library(pheatmap)
+
+#library(monocle)
+library(slingshot)
+library(RColorBrewer)
+library(scales)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2022-01-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+options("future.globals.maxSize"=2**33)
+plan("multisession", workers = 8)
+
+rerun_analyses = F
+```
+
+```{r}
+load(file.path(data_storage_folder,"scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"))
+scData.combined = scData_MoMF.DC
+```
+
+```{r}
+#m = DEN_CCL4.combined@meta.data[, c("seurat_clusters", "cluster_label","group_label")]
+#mat = Assays(DEN_CCL4.combined, "integrated")@data
+# cds <- newCellDataSet(Assays(DEN_CCL4.combined, "integrated")@data,
+#                          phenoData = new("AnnotatedDataFrame",m),
+#                          featureData = new("AnnotatedDataFrame",data.frame(gene_short_name = rownames(DEN_CCL4.combined@assays$integrated), row.names = rownames(DEN_CCL4.combined@assays$integrated))  ) )
+#rm(m, DEN_CCL4.combined)
+#gc()
+
+```
+
+<!-- ```{r, warning=FALSE} -->
+<!-- cds <- estimateSizeFactors(cds) -->
+<!-- gc() -->
+<!-- cds <- reduceDimension(cds, max_components = 25) -->
+<!-- gc() -->
+<!-- cds <- orderCells(cds) -->
+<!-- gc() -->
+<!-- cds <- orderCells(cds, root_state = 5) -->
+<!-- plot_cell_trajectory(cds) -->
+<!-- ``` -->
+
+```{r}
+sds <- slingshot(Embeddings(scData.combined, "umap"), clusterLabels = scData.combined$seurat_clusters, 
+                 start.clus = 1, stretch = 0)
+```
+
+
+```{r}
+cell_pal <- function(cell_vars, pal_fun,...) {
+  if (is.numeric(cell_vars)) {
+    pal <- pal_fun(100, ...)
+    return(pal[cut(cell_vars, breaks = 100)])
+  } else {
+    categories <- sort(unique(cell_vars))
+    pal <- setNames(pal_fun(length(categories), ...), categories)
+    return(pal[cell_vars])
+  }
+}
+```
+
+```{r}
+cell_colors <- cell_pal(scData.combined$cluster_type, brewer_pal("qual", "Set3"))
+cell_colors_clust <- cell_pal(scData.combined$seurat_clusters, hue_pal())
+```
+
+```{r}
+plot(reducedDim(sds), col = cell_colors, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+```
+
+```{r, fig.width=10,fig.height=8}
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+```
+
+```{r}
+plot(reducedDim(sds), col = cell_colors, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, col = 'black')
+```
+
+
+<!-- # Temporally dynamic genes -->
+
+<!-- ```{r} -->
+<!-- library(tradeSeq) -->
+<!-- # library(SingleCellExperiment) -->
+
+<!-- # sce = SingleCellExperiment(assays=List(counts = scData.combined@assays$RNA@counts, norm=scData.combined@assays$RNA@data), reducedDims = List(UMAP=Embeddings(scData.combined,"umap"))) -->
+<!-- # colData(sce)$GMM <- scData.combined$seurat_clusters -->
+<!-- #  -->
+<!-- # sce = slingshot(sce, clusterLabels="GMM", reducedDim="UMAP") -->
+
+<!-- # fit negative binomial GAM -->
+
+
+<!-- library(BiocParallel) -->
+<!-- bp_param = SnowParam(workers=10) -->
+
+
+<!-- set.seed(5) -->
+<!-- icMat <- evaluateK(counts = scData.combined@assays$RNA@counts, sds = sds, k = 3:10, nGenes=200, verbose=T) -->
+
+<!-- sce <- fitGAM(counts=scData.combined@assays$RNA@counts, sds = sds, BPPARAM=bp_param) -->
+
+<!-- # test for dynamic expression -->
+<!-- ATres <- associationTest(sds) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250] -->
+<!-- pst.ord <- order(sce$slingPseudotime_1, na.last = NA) -->
+<!-- heatdata <- assays(sce)$counts[topgenes, pst.ord] -->
+<!-- heatclus <- sce$GMM[pst.ord] -->
+
+<!-- heatmap(log1p(heatdata), Colv = NA, -->
+<!--         ColSideColors = brewer.pal(9,"Set1")[heatclus]) -->
+<!-- ``` -->
+

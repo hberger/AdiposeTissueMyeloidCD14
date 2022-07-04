@@ -15,18 +15,20 @@ pdf_document:
 date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
 ---
 
-```{r}
+```{r, message=FALSE}
 library(CellChat)
 library(ggplot2)                  
 library(patchwork)
 library(igraph)
+suppressPackageStartupMessages(library(ComplexHeatmap))
+
 ```
 
 ```{r}
-cellchat.healthy <- readRDS("complete_Ramachandran_NAFLD_secreted_no_mobile_healthy_only/CellChat_NET_final_complete_Ramachandran_NAFLD_secreted_no_mobile_healthy_only.rds")
+cellchat.healthy <- readRDS("complete_Ramachandran_NAFLD_secreted_no_mobile_healthy_only_v2/CellChat_NET_final_complete_Ramachandran_NAFLD_secreted_no_mobile_healthy_only_v2.rds")
 cellchat.healthy <- updateCellChat(cellchat.healthy)
 #> Update slot 'var.features' from a vector to a list
-cellchat.nafld <- readRDS("complete_Ramachandran_NAFLD_secreted_no_mobile_diseased_only/CellChat_NET_final_complete_Ramachandran_NAFLD_secreted_no_mobile_diseased_only.rds")
+cellchat.nafld <- readRDS("complete_Ramachandran_NAFLD_secreted_no_mobile_diseased_only_v2/CellChat_NET_final_complete_Ramachandran_NAFLD_secreted_no_mobile_diseased_only_v2.rds")
 cellchat.nafld <- updateCellChat(cellchat.nafld)
 #> Update slot 'var.features' from a vector to a list
 ```
@@ -34,29 +36,200 @@ cellchat.nafld <- updateCellChat(cellchat.nafld)
 
 ```{r}
 # Define the cell labels to lift up
-group.new = levels(cellchat.nafld@idents)
-cellchat.healthy <- liftCellChat(cellchat.healthy, group.new)
+group.new = levels(cellchat.healthy@idents)
+cellchat.nafld <- liftCellChat(cellchat.nafld, group.new)  
+
 #> The CellChat object will be lifted up using the cell labels FIB-A, FIB-B, FIB-P, DC, Pericyte, MYL, Immune, ENDO, Muscle, MELA, Basal-P, Basal, Spinious
 #> Update slots object@net, object@netP, object@idents in a single dataset...
-object.list <- list(healthy = cellchat.healthy, nafld = cellchat.nafld)
+object.list <- list(Healthy = cellchat.healthy, NAFLD = cellchat.nafld)
 cellchat <- mergeCellChat(object.list, add.names = names(object.list), cell.prefix = TRUE)
 #> Warning in mergeCellChat(object.list, add.names = names(object.list),
 #> cell.prefix = TRUE): Prefix cell names!
 #> Merge the following slots: 'data.signaling','net', 'netP','meta', 'idents', 'var.features' , 'DB', and 'LR'.
 ```
 
-```{r}
-pathways.show <- c("VEGF") 
-weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show) # control the edge weights across different datasets
-vertex.receiver = seq(1,10) # Left portion of hierarchy plot the shows signaling to dermal cells and right portion shows signaling to epidermal cells
+# Overview
+
+```{r, fig.height=3, fig.width=6}
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+```
+
+# Comparison NAFLD vs. Healthy
+
+
+
+
+```{r, fig.height=8, fig.width=10, eval=FALSE, echo=FALSE}
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)
+gg1 + gg2
+```
+
+## Different outgoing/incoming interaction strength per celltype
+
+```{r, fig.height=8, fig.width=10}
+num.link <- sapply(object.list, function(x) {rowSums(x@net$count) + colSums(x@net$count)-diag(x@net$count)})
+weight.MinMax <- c(min(num.link), max(num.link)) # control the dot size in the different datasets
+gg <- list()
+for (i in 1:length(object.list)) {
+  gg[[i]] <- netAnalysis_signalingRole_scatter(object.list[[i]], title = names(object.list)[i], weight.MinMax = weight.MinMax)
+}
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+patchwork::wrap_plots(plots = gg)
+```
+
+## Number and strength of incoming/outgoing interactions for selected populations
+
+Shown are interactions of adipose tissue MoMF and liver hepatocytes.
+
+```{r, fig.height=8, fig.width=10, eval=FALSE}
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
 par(mfrow = c(1,2), xpd=TRUE)
 for (i in 1:length(object.list)) {
-  netVisual_aggregate(object.list[[i]], signaling = pathways.show, vertex.receiver = vertex.receiver, edge.weight.max = weight.max[1], edge.width.max = 10, signaling.name = paste(pathways.show, names(object.list)[i]))
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Outgoing number of interactions - ", names(object.list)[i]), sources.use = "Perivascular MF_Adipose")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Incoming number of interactions - ", names(object.list)[i]), targets.use = "Perivascular MF_Adipose")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Outgoing number of interactions - ", names(object.list)[i]), sources.use = "KC-like_Adipose")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Incoming number of interactions - ", names(object.list)[i]), targets.use = "KC-like_Adipose")
+}
+
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Outgoing number of interactions - ", names(object.list)[i]), sources.use = "Lipid Associated MF_Adipose")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Incoming number of interactions - ", names(object.list)[i]), targets.use = "Lipid Associated MF_Adipose")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Outgoing number of interactions - ", names(object.list)[i]), sources.use = "Hepatocytes_Liver")
+}
+
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Incoming number of interactions - ", names(object.list)[i]), targets.use = "Hepatocytes_Liver")
 }
 ```
 
+### Comparison of interactions per pathway and cell type
 
-```{r}
+#### Outgoing
+
+```{r, fig.height=10, fig.width=10}
+i = 1
+# combining all the identified signaling pathways from different datasets 
+pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 10, height = 14)
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 10, height = 14)
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+#### Incoming 
+
+```{r, fig.height=10, fig.width=10}
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i], width = 10, height = 14, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+1], width = 10, height = 14, color.heatmap = "GnBu", )
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+
+#### Incoming + Outgoing
+
+```{r, fig.height=10, fig.width=10}
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "all", signaling = pathway.union, title = names(object.list)[i], width = 10, height = 14, color.heatmap = "OrRd")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+1], width = 10, height = 14, color.heatmap = "OrRd")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+
+# Differential interactions NAFLD vs. healthy (ligand-receptor pairs) by adipose cell type
+
+## Perivascular MF
+
+### Outoging
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, sources.use = "Perivascular MF_Adipose", targets.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+### Incoming
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, targets.use = "Perivascular MF_Adipose", sources.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+## DC-like
+
+### Outgoing
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, sources.use = "DC-like_Adipose", targets.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+### Incoming
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, targets.use = "DC-like_Adipose", sources.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+
+## Lipid Associated MF
+
+### Outgoing
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, sources.use = "Lipid Associated MF_Adipose", targets.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+### Incoming
+
+```{r, fig.width=14,fig.height=8}
+netVisual_bubble(cellchat, targets.use = "Lipid Associated MF_Adipose", sources.use = c(5,6,9,10,11,12,14,17,18,19,21,22:27),  comparison = c(1, 2), angle.x = 45)
+#> Comparing communications on a merged object
+```
+
+
+
+
+# Individual pathways
+
+## Hierarchical plots
+
+Plots show selected cell populations (here: adipose tissue MF populations) on the left and all other populations on the right of each plot. Dots in the middle denote the targets (receivers) of the signals, while all other dots on the right and left are senders. While in the left figure the selected populations are receivers of signals, on the right the remaining populations are receivers. Self-self connections denote likely paracrine loops. 
+
+```{r, fig.height=10, fig.width=18}
+# Hierarchy plot
+pathways.show <- c("VEGF","PDGF",  "VISFATIN","CXCL","CCL","CALCR","BAG","IGF","GALECTIN","IL16","PTN","MIF","ANGPTL","ANNEXIN","TNF", "TGFb") 
+for (pp in pathways.show) {
+  weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pp) # control the edge weights across different datasets
+  vertex.receiver = c(4,7,8,16) # Left portion of hierarchy plot the shows signaling to dermal cells and right portion shows signaling to epidermal cells
+  par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(object.list)) {
+    netVisual_aggregate(object.list[[i]], signaling = pp, vertex.receiver = vertex.receiver, edge.weight.max = weight.max[1], edge.width.max = 10, signaling.name = paste(pp, names(object.list)[i]), layout="hierarchy", title.space = 1, vertex.weight.max = 2)
+  }  
+}
+
+```
+
+
+
+```{r, fig.height=8, fig.width=10, eval=FALSE}
 # Circle plot
 pathways.show <- c("VEGF") 
 weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show) # control the edge weights across different datasets
@@ -66,49 +239,65 @@ for (i in 1:length(object.list)) {
 }
 ```
 
-```{r}
+
+## Circos plots
+
+```{r, fig.height=10, fig.width=20}
 # Chord diagram
-pathways.show <- c("VEGF") 
-par(mfrow = c(1,2), xpd=TRUE)
-for (i in 1:length(object.list)) {
-  netVisual_aggregate(object.list[[i]], signaling = pathways.show, layout = "chord", signaling.name = paste(pathways.show, names(object.list)[i]))
+#pathways.show <- c("VEGF", "GAS","IL1", "CD40","TNF") 
+for (pp in pathways.show) {
+  par(mfrow = c(1,2), xpd=FALSE)
+  for (i in 1:length(object.list)) {
+    p = netVisual_aggregate(object.list[[i]], signaling = pp, layout = "chord", signaling.name = paste(pp, names(object.list)[i]))
+  }
 }
 
 ```
 
-```{r}
-gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
-gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
-gg1 + gg2
+# Genes in differential selected pathways
+
+Green = healthy adipose/liver  
+Red = NAFLD adipose/cirrhotic liver
+
+
+```{r, fig.height=8, fig.width=14, warning=FALSE, message=FALSE}
+#cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("Healthy","NAFLD")) # set factor level
+for (pp in pathways.show) {
+  p = plotGeneExpression(cellchat, signaling = pp, split.by = "datasets", colors.ggplot = T, color.use = c("green","red") )
+  print(p)
+}
 ```
 
-```{r}
-gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE)
-gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)
-gg1 + gg2
-```
+
+
+<!-- # Top 20% of differential interactions -->
+
+<!-- ```{r, fig.width=14, fig.height=8} -->
+<!-- par(mfrow = c(1,2), xpd=TRUE) -->
+<!-- netVisual_diffInteraction(cellchat, weight.scale = T, top=0.2) -->
+<!-- netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight", top=0.2) -->
+<!-- ``` -->
+
+<!-- ```{r, fig.width=14, fig.height=8, eval=FALSE} -->
+<!-- gg1 <- netVisual_heatmap(cellchat) -->
+<!-- #> Do heatmap based on a merged object -->
+<!-- gg2 <- netVisual_heatmap(cellchat, measure = "weight") -->
+<!-- #> Do heatmap based on a merged object -->
+<!-- gg1 + gg2 -->
+<!-- ``` -->
+
+
+<!-- ```{r, eval=FALSE} -->
+<!-- weight.max <- getMaxWeight(object.list, attribute = c("idents","count")) -->
+<!-- par(mfrow = c(1,2), xpd=TRUE) -->
+<!-- for (i in 1:length(object.list)) { -->
+<!--   netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i])) -->
+<!-- } -->
+<!-- ``` -->
+
+# Software versions
 
 ```{r}
-library(ComplexHeatmap)
-#> Loading required package: grid
-#> ========================================
-#> ComplexHeatmap version 2.7.1.1010
-#> Bioconductor page: http://bioconductor.org/packages/ComplexHeatmap/
-#> Github page: https://github.com/jokergoo/ComplexHeatmap
-#> Documentation: http://jokergoo.github.io/ComplexHeatmap-reference
-#> 
-#> If you use it in published research, please cite:
-#> Gu, Z. Complex heatmaps reveal patterns and correlations in multidimensional 
-#>   genomic data. Bioinformatics 2016.
-#> 
-#> This message can be suppressed by:
-#>   suppressPackageStartupMessages(library(ComplexHeatmap))
-#> ========================================
-i = 1
-# combining all the identified signaling pathways from different datasets 
-pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
-ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6)
-ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6)
-draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+sessionInfo()
 ```
 

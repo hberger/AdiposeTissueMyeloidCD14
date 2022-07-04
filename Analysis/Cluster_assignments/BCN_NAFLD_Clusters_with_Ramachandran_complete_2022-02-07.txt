@@ -10,19 +10,19 @@ ClusterID	Type	Label	Markers
 8	Lymphocytes	T/NK-Cell 5	CD3;RORA;GATA3
 9	Granulocytes	Neutrophils	PGLYRP1;CSF3R;FCGR3B
 10	Mo	Non-classical Monocytes	CD68+;CD16+;CD14-
-11	MoMF	DC-like/Perivascular	MJV BCN NAFLD;CD1C
+11	MoMF	DC-like	MJV BCN NAFLD;CD1C
 12	Lymphocytes	B-Cell	CD19;CD20
 13	Lymphocytes	T/NK-Cell 6	CD3;RORA;GATA3
 14	MoMF	KC-like	MJV BCN NAFLD;VSIG4;TIMD4;MARCO
 15	MoMF	Lipid Associated MF	MJV BCN NAFLD; TREM2
-16	Epithelial	Hepatocytes 1	EPCAM;KRT18;KRT8;VTN
+16	Epithelial	Hepatocytes	EPCAM;KRT18;KRT8;VTN
 17	Stromal	Stellate 1	MSigDB
 18	Lymphocytes	T/NK-Cell 7	CD3;RORA;GATA3
 19	Stromal	LSEC	MSigDB
 20	Stromal	MVEC 2	MSigDB
-21	n.a.	Cycling 1	TOP2A;MKI67
+21	n.a.	Cycling	TOP2A;MKI67
 22	Lymphocytes	Plasma cell	IGH
-23	Epithelial	Hepatocytes 2	EPCAM;KRT18;KRT8
+23	Epithelial	Adipose tissue mixed non-myeloid	EPCAM;KRT18;KRT8
 24	DC	pre-DC	CLEC4C
 25	Stromal	Stellate 2	MSigDB
 26	Stromal	Endothelial	MSigDB

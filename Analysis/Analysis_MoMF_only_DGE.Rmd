@@ -1,0 +1,501 @@
+---
+title: "Analysis of anntotated clusters - MoMF and DC populations"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+library(pheatmap)
+library(EnhancedVolcano)
+library(naturalsort)
+
+library(clusterProfiler)
+options(connectionObserver = NULL) # temporary fix for RStudio issue with RSQLite
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(msigdbr)
+
+library(future)
+library(future.apply)
+plan(multicore, workers=8)
+#plan(multisession, workers=8) # this does not provide a relevant improvement in performance under Win10
+
+source("DGE_Helper.R")
+
+source("DotPlot_fixed.R")
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+rerun_analyses = T
+
+#ref_folder = "/home/hilmar/Work/References/"
+ref_folder = "../../References/"
+
+```
+
+```{r}
+project_name = "_MoMF_DC"
+```
+
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+```
+
+
+```{r}
+# differentially expressed genes from macrophage stimulations in GSE47189
+maf_resource_env = new.env()
+load("../../DataSets/GSE47189_MacrophageResource/DGE_results_Macrophages.Rdata", envir = maf_resource_env)
+
+all_maf_dge = get("all_results", maf_resource_env)
+```
+
+```{r}
+homologene_human_mouse = fread(file.path(ref_folder, "HomologousGenes/HomoloGene/build68/homologene_9606_10090.txt"))
+all_entrez_ids = data.frame(EntrezID=unique(all_maf_dge[[1]]$ENTREZID))
+all_symbols = data.frame(GeneSymbol=unique(all_maf_dge[[1]]$SYMBOL))
+a1 = merge(all_entrez_ids, homologene_human_mouse[,c("entrez_1","symbol_1","entrez_2","symbol_2"), with=F], by.x="EntrezID", by.y="entrez_1", all.x=T, sort=F)
+
+human_to_mouse=a1
+human_to_mouse = subset(human_to_mouse, !is.na(entrez_2) & !is.na(symbol_2) & !symbol_2 == "" & !is.na(EntrezID))
+rownames(human_to_mouse) = human_to_mouse$EntrezID
+```
+
+
+```{r, warning=FALSE, results='hide'}
+maf_res_top_lists = list()
+
+# select differentially expressed genes and convert to mouse Entrez IDs
+for (n in names(all_maf_dge)) {
+  tmp = subset(all_maf_dge[[n]], logFC > 1 & adj.P.Val < 0.05 & !is.na(ENTREZID))$ENTREZID
+  if(length(tmp)>0) maf_res_top_lists[[paste0(n,"_UP")]] = data.frame(gs_name = paste0(n,"_UP"), entrez_gene = tmp, stringsAsFactors = F)
+  tmp = subset(all_maf_dge[[n]], logFC < -1 & adj.P.Val < 0.05 & !is.na(ENTREZID))$ENTREZID
+  if(length(tmp)>0) maf_res_top_lists[[paste0(n,"_DOWN")]] = data.frame(gs_name = paste0(n,"_DOWN"), entrez_gene = tmp, stringsAsFactors = F)
+}
+
+maf_ref_top_lists_gs = do.call(rbind, maf_res_top_lists)
+rownames(maf_ref_top_lists_gs) <- NULL
+maf_ref_top_lists_gs$gs_name = gsub("\uFFB5", "^", maf_ref_top_lists_gs$gs_name)
+
+rm(all_maf_dge)
+gc()
+```
+
+
+```{r}
+signatures_gs = import_sigs()
+```
+
+
+# Overview
+
+```{r}
+new_groups_text = "SampleID\tSAMPLE ID_BCN\tNAME\tstage\tstatus
+AP8596\tpatient1\tpatient 1\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AP9962\tAP003\tpatient 2\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AR9955\tP181-control1\tpatient 4\tNAFLD-F0-F1\tNAFLD
+AS2023\tP197\tpatient 3\tNAFLD-F0-F2\tNAFLD
+AR9367\tP184\tcontrol 1\tOBESE\tOBESE
+AR9368\tP189\tcontrol 2\tOBESE\tOBESE"
+new_groups = read.table(text=new_groups_text, sep="\t", header=T)
+new_groups$stage = gsub("-","_", new_groups$stage)
+new_groups
+rownames(new_groups) = new_groups$SampleID
+
+scData.combined$stage_new = new_groups[scData.combined$orig.ident, "stage"]
+scData.combined$status_new = new_groups[scData.combined$orig.ident, "status"]
+```
+
+
+
+
+# Cluster overview
+
+```{r, fig.width=14, fig.height=8}
+DimPlot(scData.combined, reduction = "umap", label = TRUE) 
+```
+
+```{r}
+all_clusters_tab = unique(as.data.frame(scData.combined@meta.data[, c("seurat_clusters", "cluster_label")]))
+rownames(all_clusters_tab) = as.character(all_clusters_tab$seurat_clusters)
+all_clusters_tab = all_clusters_tab[order(all_clusters_tab$seurat_clusters),]
+```
+
+# Pseudo-Bulk analysis, differential expression between experimental conditions
+
+Note that samples belonging to project tacke_p1 (R0030-R0033) will only be used for the WD vs. CD comparison and CDA-HFD vs. WD comparison.
+
+## NAFLD Advanced fibrosis vs Obese controls
+
+```{r}
+selected_c = WhichCells(scData.combined, expression = ( stage_new %in% c("OBESE","NAFLD_ADVANCED FIBROSIS")) )
+sel_dds = subset(scData.combined, cells = selected_c)
+
+title="AdvFibrosis_vs_Obese"
+
+sel_dds$celltype_condition = factor(paste0(sel_dds$cluster_label, "_",sel_dds$stage_new ))
+levels(sel_dds$celltype_condition) = naturalsort(levels(sel_dds$celltype_condition))
+
+# This is required for FindMarkers
+Idents(sel_dds) <- "celltype_condition"
+
+table(sel_dds$cluster_label, sel_dds$stage_new)
+
+output_prefix = paste0("DGE_",title,"_",project_name,"_all_celltypes_combined_analysis")
+
+if(rerun_analyses) {
+
+  dge_results = compute_DGE(sel_dds, target_suffix="_NAFLD_ADVANCED FIBROSIS", control_suffix= "_OBESE", group_parameter = "stage_new")
+  
+  save(dge_results, file=file.path(data_storage_folder, paste0(output_prefix,".Rdata")) )
+  
+  dge_results_all = do.call(rbind, dge_results)
+  write_xlsx(dge_results_all, file.path(result_folder, paste0(output_prefix,".xlsx")))
+
+} else {
+  load(file.path(data_storage_folder, paste0(output_prefix,".Rdata")))
+  dge_results_all = do.call(rbind, dge_results)
+}
+
+```
+### Volcano plots
+
+```{r, fig.width=16, fig.height=6}
+for (f in names(dge_results)) {
+    tmp = dge_results[[f]]
+    p = EnhancedVolcano(tmp,
+                        lab = tmp$GeneSymbol,
+                        x = 'avg_log2FC',
+                        y = 'p_val_adj',
+                        title=f)
+    print(p)
+  
+}
+```
+
+
+### Percentage of cells expressing top 5 differentially expressed genes in each cell type
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(dge_results_all$GeneSymbol, dge_results_all$celltype, head, 5)))
+DotPlot(sel_dds, features = top_5_markers , dot.scale = 4, cols = c("lightgrey", "blue"), split.by = NULL, assay = "RNA") +    RotatedAxis()
+```
+
+### Top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, dge_results_all, title)
+```
+
+
+### Functional enrichment of genes differentially expressed upon treatment
+
+
+```{r}
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+if(rerun_analyses) {
+  all_enrichments = compute_functional_enrichment(scData.combined, dge_results_all, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+## NAFLD F0-F1 vs Obese controls
+
+```{r}
+selected_c = WhichCells(scData.combined, expression = ( stage_new %in% c("OBESE","NAFLD_F0_F1")) )
+sel_dds = subset(scData.combined, cells = selected_c)
+
+title="F0F1_vs_Obese"
+
+sel_dds$celltype_condition = factor(paste0(sel_dds$cluster_label, "_",sel_dds$stage_new ))
+levels(sel_dds$celltype_condition) = naturalsort(levels(sel_dds$celltype_condition))
+
+# This is required for FindMarkers
+Idents(sel_dds) <- "celltype_condition"
+
+table(sel_dds$cluster_label, sel_dds$stage_new)
+
+output_prefix = paste0("DGE_",title,"_",project_name,"_all_celltypes_combined_analysis")
+
+if(rerun_analyses) {
+
+  dge_results = compute_DGE(sel_dds, target_suffix="_NAFLD_F0_F1", control_suffix= "_OBESE", group_parameter = "stage_new")
+  
+  save(dge_results, file=file.path(data_storage_folder, paste0(output_prefix,".Rdata")) )
+  
+  dge_results_all = do.call(rbind, dge_results)
+  write_xlsx(dge_results_all, file.path(result_folder, paste0(output_prefix,".xlsx")))
+
+} else {
+  load(file.path(data_storage_folder, paste0(output_prefix,".Rdata")))
+  dge_results_all = do.call(rbind, dge_results)
+}
+
+```
+### Volcano plots
+
+```{r, fig.width=16, fig.height=6}
+for (f in names(dge_results)) {
+    tmp = dge_results[[f]]
+    p = EnhancedVolcano(tmp,
+                        lab = tmp$GeneSymbol,
+                        x = 'avg_log2FC',
+                        y = 'p_val_adj',
+                        title=f)
+    print(p)
+  
+}
+```
+
+
+### Percentage of cells expressing top 5 differentially expressed genes in each cell type
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(dge_results_all$GeneSymbol, dge_results_all$celltype, head, 5)))
+DotPlot(sel_dds, features = top_5_markers , dot.scale = 4, cols = c("lightgrey", "blue"), split.by = NULL, assay = "RNA") +    RotatedAxis()
+```
+
+### Top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, dge_results_all, title)
+```
+
+
+### Functional enrichment of genes differentially expressed upon treatment
+
+
+```{r}
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+if(rerun_analyses) {
+  all_enrichments = compute_functional_enrichment(scData.combined, dge_results_all, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+## NAFLD Advanced Fibrosis vs. NAFLD F0-F1 
+
+```{r}
+selected_c = WhichCells(scData.combined, expression = ( stage_new %in% c("NAFLD_ADVANCED FIBROSIS","NAFLD_F0_F1")) )
+sel_dds = subset(scData.combined, cells = selected_c)
+
+title="AdvFibrosis_vs_F0F1"
+
+sel_dds$celltype_condition = factor(paste0(sel_dds$cluster_label, "_",sel_dds$stage_new ))
+levels(sel_dds$celltype_condition) = naturalsort(levels(sel_dds$celltype_condition))
+
+# This is required for FindMarkers
+Idents(sel_dds) <- "celltype_condition"
+
+table(sel_dds$cluster_label, sel_dds$stage_new)
+
+output_prefix = paste0("DGE_",title,"_",project_name,"_all_celltypes_combined_analysis")
+
+if(rerun_analyses) {
+
+  dge_results = compute_DGE(sel_dds, target_suffix="_NAFLD_ADVANCED FIBROSIS", control_suffix= "_NAFLD_F0_F1", group_parameter = "stage_new")
+  
+  save(dge_results, file=file.path(data_storage_folder, paste0(output_prefix,".Rdata")) )
+  
+  dge_results_all = do.call(rbind, dge_results)
+  write_xlsx(dge_results_all, file.path(result_folder, paste0(output_prefix,".xlsx")))
+
+} else {
+  load(file.path(data_storage_folder, paste0(output_prefix,".Rdata")))
+  dge_results_all = do.call(rbind, dge_results)
+}
+
+```
+### Volcano plots
+
+```{r, fig.width=16, fig.height=6}
+for (f in names(dge_results)) {
+    tmp = dge_results[[f]]
+    p = EnhancedVolcano(tmp,
+                        lab = tmp$GeneSymbol,
+                        x = 'avg_log2FC',
+                        y = 'p_val_adj',
+                        title=f)
+    print(p)
+  
+}
+```
+
+
+### Percentage of cells expressing top 5 differentially expressed genes in each cell type
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(dge_results_all$GeneSymbol, dge_results_all$celltype, head, 5)))
+DotPlot(sel_dds, features = top_5_markers , dot.scale = 4, cols = c("lightgrey", "blue"), split.by = NULL, assay = "RNA") +    RotatedAxis()
+```
+
+### Top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, dge_results_all, title)
+```
+
+
+### Functional enrichment of genes differentially expressed upon treatment
+
+
+```{r}
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+if(rerun_analyses) {
+  all_enrichments = compute_functional_enrichment(scData.combined, dge_results_all, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+## NAFLD (all fibrosis stages) vs Obese controls
+
+```{r}
+selected_c = WhichCells(scData.combined, expression = ( status_new %in% c("NAFLD","OBESE")) )
+sel_dds = subset(scData.combined, cells = selected_c)
+
+title="NAFLD_vs_Obese"
+
+sel_dds$celltype_condition = factor(paste0(sel_dds$cluster_label, "_",sel_dds$status_new ))
+levels(sel_dds$celltype_condition) = naturalsort(levels(sel_dds$celltype_condition))
+
+# This is required for FindMarkers
+Idents(sel_dds) <- "celltype_condition"
+
+table(sel_dds$cluster_label, sel_dds$status_new)
+
+output_prefix = paste0("DGE_",title,"_",project_name,"_all_celltypes_combined_analysis")
+
+if(rerun_analyses) {
+
+  dge_results = compute_DGE(sel_dds, target_suffix="_NAFLD", control_suffix= "_OBESE", group_parameter = "status_new")
+  
+  save(dge_results, file=file.path(data_storage_folder, paste0(output_prefix,".Rdata")) )
+  
+  dge_results_all = do.call(rbind, dge_results)
+  write_xlsx(dge_results_all, file.path(result_folder, paste0(output_prefix,".xlsx")))
+
+} else {
+  load(file.path(data_storage_folder, paste0(output_prefix,".Rdata")))
+  dge_results_all = do.call(rbind, dge_results)
+}
+
+```
+### Volcano plots
+
+```{r, fig.width=16, fig.height=6}
+for (f in names(dge_results)) {
+    tmp = dge_results[[f]]
+    p = EnhancedVolcano(tmp,
+                        lab = tmp$GeneSymbol,
+                        x = 'avg_log2FC',
+                        y = 'p_val_adj',
+                        title=f)
+    print(p)
+  
+}
+```
+
+
+### Percentage of cells expressing top 5 differentially expressed genes in each cell type
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(dge_results_all$GeneSymbol, dge_results_all$celltype, head, 5)))
+DotPlot(sel_dds, features = top_5_markers , dot.scale = 4, cols = c("lightgrey", "blue"), split.by = NULL, assay = "RNA") +    RotatedAxis()
+```
+
+### Top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, dge_results_all, title)
+```
+
+
+### Functional enrichment of genes differentially expressed upon treatment
+
+
+```{r}
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+if(rerun_analyses) {
+  all_enrichments = compute_functional_enrichment(scData.combined, dge_results_all, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```

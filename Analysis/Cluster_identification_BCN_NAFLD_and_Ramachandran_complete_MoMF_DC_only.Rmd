@@ -58,8 +58,8 @@ plan("multisession", workers = 8)
 ref_folder = "../../References/"
 
 rerun_reprocess = F
-rerun_dge_analyses = F
-rerun_enrichment_analyses = F
+rerun_dge_analyses = T
+rerun_enrichment_analyses = T
 
 set.seed(1234)
 ```
@@ -131,8 +131,8 @@ if(rerun_reprocess) {
 
 # Cluster overview
 
-```{r}
-DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, dims=c(1,2))
+```{r, fig.width=8, fig.height=6}
+DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, dims=c(1,2)) + NoLegend()
 ```
 
 ## New clusters vs. cluster labels from full data sets
@@ -179,9 +179,10 @@ scData_MoMF.DC = AddMetaData(scData_MoMF.DC, cluster_assignment[as.character(scD
 scData_MoMF.DC = AddMetaData(scData_MoMF.DC, cluster_assignment[as.character(scData_MoMF.DC$seurat_clusters),"Type"], col.name = "cluster_type")
 ```
 
-```{r, fig.width=14, fig.height=8}
+```{r, fig.width=10, fig.height=8}
+scData_MoMF.DC$cluster_label = factor(scData_MoMF.DC$cluster_label, levels=sort(unique(scData_MoMF.DC$cluster_label)))
 scData_MoMF.DC = SetIdent(scData_MoMF.DC, value="cluster_label" )
-DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE)
+DimPlot(scData_MoMF.DC, reduction = "umap", label = TRUE, label.size = 5) + NoLegend()
 ```
 
 ```{r}
@@ -219,10 +220,30 @@ pheatmap(mm_r, cluster_cols = F, cluster_rows=F)
 save(scData_MoMF.DC,file=file.path(data_storage_folder, "scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"))
 ```
 
+
+
+
 ```{r}
 all_clusters_tab = unique(as.data.frame(scData_MoMF.DC@meta.data[, c("seurat_clusters", "cluster_label", "cluster_type")]))
 rownames(all_clusters_tab) = as.character(all_clusters_tab$seurat_clusters)
 all_clusters_tab = all_clusters_tab[order(all_clusters_tab$seurat_clusters),]
+```
+
+## Comparison with original BCN adipose tissue myeloid cells
+
+```{r}
+m_nafld = fread("./Metadata_complete.txt")
+setkey(m_nafld, "orig_cell_id")
+
+scData_MoMF.DC$clusters_BCN_NAFLD = m_nafld[as.character(scData_MoMF.DC$orig_cell_id)]$cluster_label
+m =  table(scData_MoMF.DC$clusters_BCN_NAFLD, scData_MoMF.DC$cluster_label, dnn=c("Adipose tissue labels","Combined DS labels"))
+kable(m)
+```
+
+
+```{r, fig.height=8, fig.width=12}
+pheatmap(m, main="Absolute cell numbers")
+pheatmap(sweep(m, 1, apply(m,1,sum),"/"), main="Relative cell numbers (columns: complete DS, rows: adipose tissue only). Color: proportion of adipose cells in cluster", cluster_cols=F)
 ```
 
 
