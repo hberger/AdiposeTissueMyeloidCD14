@@ -91,7 +91,7 @@ compute_functional_enrichment <- function(data, curr_dge_tab, title) {
   curr_dge_tab$direction = with(curr_dge_tab, ifelse(avg_log2FC > 0, "Up", ifelse(avg_log2FC < 0, "Down","nc")) )
   curr_dge_tab$gene_group = with(curr_dge_tab, paste0(celltype,"_",direction))
   
-  tmp = AnnotationDbi::select(org.Hs.eg.db, keys=rownames(sel_dds@assays$RNA), keytype = "SYMBOL", columns="ENTREZID")
+  tmp = AnnotationDbi::select(org.Hs.eg.db, keys=rownames(data@assays$RNA), keytype = "SYMBOL", columns="ENTREZID")
 
   gs2e = tapply(tmp$ENTREZID, tmp$SYMBOL, paste, collapse=",")
   e2gs = tapply(tmp$SYMBOL, tmp$ENTREZID, paste, collapse=",")

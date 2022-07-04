@@ -1,0 +1,329 @@
+---
+title: "Cluster markers - Myeloid cells only, RNA assay for DGE"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(magrittr)
+library(dplyr)
+
+library(pheatmap)
+
+library(grid)
+library(png)
+
+library(clusterProfiler)
+
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(msigdbr)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+options("future.globals.maxSize"=2**33)
+plan("multicore", workers = 8)
+
+
+source("DotPlot_fixed.R")
+source("DGE_Helper.R")
+
+ref_folder = "../../References/"
+
+rerun_analyses = F
+preprocess_data = F
+rerun_gsea_analyses = F
+```
+
+We only keep clusters annotated as MoMF, DC, and KC in the global analysis and reprocess the remaining cells using the same integrated analysis. 
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+```
+
+
+# Cluster overview
+
+```{r, fig.width=10, fig.height=6}
+DimPlot(scData.combined, reduction = "umap", label = TRUE)
+```
+
+```{r, fig.width=14, fig.height=8}
+DimPlot(scData.combined, reduction = "umap", label = TRUE, split.by = "sample_label")
+```
+
+# Marker genes for clusters
+
+```{r}
+#DEN_CCL4_markers <- FindAllMarkers(object = scData.combined, only.pos = TRUE, min.pct = 0.6, min.diff.pct = 0.3, thresh.use = 0.3, test.use = "roc")
+if(rerun_analyses) {
+  cluster_markers <- FindAllMarkers(object = scData.combined, only.pos = TRUE, assay = "RNA")
+  save(cluster_markers, file=file.path(data_storage_folder, "All_markers_MoMF_DC_reprocessed_v2.Rdata"))
+  write_xlsx(cluster_markers,file.path(result_folder, "All_markers_MoMF_DC_reprocessed_v2.xlsx"))
+} else {
+  load(file.path(data_storage_folder, "All_markers_MoMF_DC_reprocessed_v2.Rdata"))
+}
+```
+
+```{r}
+plot_top_genes <- function(data, dge_results_all, title) {
+  for (n in sort(unique(data$cluster_label))) {
+    tmp = subset(dge_results_all, cluster==n & p_val_adj < 0.05)
+    tmp = tmp[order(-tmp$avg_log2FC),]
+    if(nrow(tmp)<1) next
+    tmp_up = subset(tmp, avg_log2FC > 0)
+    if(nrow(tmp_up)<1) next
+    tmp_up$direction = "up"
+    #tmp_down = subset(tmp, avg_log2FC < 0)
+    #tmp_down$direction = "down"
+    
+    #final_top_genes = rbind(head(tmp_up,10), head(tmp_down,10))
+    final_top_genes = head(tmp_up, 10)
+    final_top_genes = final_top_genes[order(final_top_genes$avg_log2FC),]
+    final_top_genes$gene = factor(final_top_genes$gene, levels = final_top_genes$gene)
+    p = ggplot(final_top_genes, aes(y=avg_log2FC, x=gene, fill=direction)) + geom_bar(stat="identity") + ggtitle(paste0(n, ", ", title)) + coord_flip() + theme(axis.text.y =  element_text(size=12) )
+    print(p)
+    
+  }
+}
+```
+
+```{r}
+DefaultAssay(scData.combined) <- "RNA"
+scData.combined <- ScaleData(scData.combined, verbose = TRUE, features = rownames(scData.combined@assays$RNA@counts))
+gc()
+```
+
+
+## overview (10 top genes for each cluster)
+
+
+
+```{r, fig.width=14, fig.height=12}
+cluster_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(scData.combined, features = top10$gene) + NoLegend()
+```
+
+
+## Percent expression of top markers across clusters
+
+```{r, fig.width=16, fig.height=14}
+top_5_markers = unique(unlist(tapply(cluster_markers$gene, cluster_markers$cluster, head, 5)))
+DotPlot(scData.combined, features = top_5_markers , dot.scale = 4, cols = c("red", "blue"), assay = "RNA") +    RotatedAxis()
+```
+
+## Log2 Fold Changes of top 10 DE genes from each cluster
+
+```{r, fig.width=12, fig.height=6}
+plot_top_genes(scData.combined, cluster_markers, "Cluster markers")
+```
+
+
+<!-- ```{r} -->
+<!-- marker_matrix = dcast(as.data.table(DEN_CCL4_markers), gene ~ cluster, value.var="avg_logFC") -->
+<!-- tmp1 = as.matrix(marker_matrix[,2:ncol(marker_matrix)]) -->
+<!-- # tmp = cor(tmp1, method="spearman", use="pairwise") -->
+<!-- # pheatmap(tmp, cluster_rows=F, cluster_cols=F) -->
+
+<!-- tmp1[is.na(tmp1)] <- 0 -->
+<!-- tmp = cor(tmp1, method="spearman", use="pairwise") -->
+<!-- pheatmap(tmp, cluster_rows=F, cluster_cols=F, main="Pairwise marker gene correlations") -->
+<!-- ``` -->
+
+```{r, eval=FALSE}
+all_cluster_numbers = as.character(sort(unique(scData.combined$seurat_clusters)))
+tmp = table(scData.combined$seurat_clusters)
+all_cluster_numbers_gt_3_cells = names(tmp[tmp>3])
+```
+
+
+```{r, eval=FALSE}
+if(rerun_analyses) {
+DefaultAssay(scData.combined) <- "RNA"
+
+  cons_markers = list()
+  for (n in all_cluster_numbers_gt_3_cells) {
+    nn = as.integer(n)
+    cons_markers[[as.character(n)]] <- tryCatch({FindConservedMarkers(scData.combined, ident.1 = nn, grouping.var = "group", verbose = FALSE)}, error=function(e) NULL)
+  }
+  save(cons_markers, file=file.path(data_storage_folder,"Conserved_cluster_markers.Rdata"))
+  
+  tmp1 = mapply(function(x,y) {x$cluster=rep(y, nrow(x));x$GeneSymbol = rownames(x); x$avg_logFC_global=apply(x[,grepl("_avg_logFC",colnames(x)),drop=F],1,mean,na.rm=T);x}, cons_markers, names(cons_markers))
+  all_unique_colnames = unique(unlist(lapply(tmp1, colnames)))
+  tmp2 = lapply(tmp1, function(x) {missing_cols = all_unique_colnames[!all_unique_colnames %in% colnames(x)]; for (m in missing_cols) {x[[m]]=NA}; x})
+  cons_markers_all = do.call(rbind, tmp2)
+  write_xlsx(cons_markers_all,file.path(result_folder, "All_cons_markers.xlsx"))
+  
+} else {
+  load(file.path(data_storage_folder,"Conserved_cluster_markers.Rdata"))
+}
+
+```
+
+
+## Functional enrichment
+
+We here use serveral data bases of known functionally relevant gene expression signatures and gene sets to identify those who are enriched among cluster marker lists. 
+
+Data bases used are:
+
+  - Molecular Signature DB (MSigDB, https://www.gsea-msigdb.org/gsea/msigdb), collections:
+     - H (Hallmark), 
+     - C2 (curated genesets and canonical pathways from KEGG, REACTOME etc.)
+     - C3 (target genes of transcription factors and micro-RNAs)
+     - C7 (immunologic signature gene sets)
+  - KEGG DB (overlaps C2 database from MSigDB)
+  - REACTOME DB (overlaps C2 database from MSigDB)
+  - GO Biological Process
+  <!-- - MAF_RES (Macrophage Resource)  - Genes up-/downregulated upon stimulation with different activators in macrophages (Xue et al, Immunity 2014, doi: 10.1016/j.immuni.2014.01.006) -->
+  - Marker genes from clusters described in Hildgreth et al., Nat Immunology 2021, p.639
+
+
+```{r}
+signatures_gs <- import_sigs()
+```
+
+
+```{r}
+title = "MoMF_DC_cluster_markers_v2"
+project_name = "BCM_MarColl"
+result_file = paste0("DGE_",title,"_",project_name,"_by_celltype_enrichment.Rdata")
+
+
+if(rerun_gsea_analyses) {
+
+  tmp = cluster_markers
+  tmp$celltype = tmp$cluster
+  tmp$GeneSymbol = tmp$gene
+  all_enrichments = compute_functional_enrichment(scData.combined, tmp, title)
+  
+  save(all_enrichments, file=file.path(data_storage_folder, result_file))
+} else {
+  load(file.path(data_storage_folder, result_file))
+}
+```
+
+### Top enriched terms per cluster
+
+```{r, fig.width=18, fig.height=16}
+for (n in sort(names(all_enrichments))) {
+  p = my_dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n)
+  print(p)
+}
+```
+
+
+<!-- ```{r, fig.height=10, fig.width=16} -->
+<!-- for (n in names(all_enrichments)) { -->
+<!--   p = dotplot(all_enrichments[[n]]) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(n) -->
+<!--   print(p) -->
+<!-- } -->
+<!-- ``` -->
+
+
+## Top 30 marker genes
+
+Feature and violin plots for the top 30 marker genes of each cluster are written to file *Top30_Cluster_Markers.pdf*
+
+```{r}
+
+plot_genes2 <- function(dataset, genes) {
+  
+  all_genes =rownames(dataset@assays$RNA)
+  
+  for (g in sort(names(genes))) {
+    if (!g %in% all_genes) {
+      print(paste0("Gene ",g," has no data (possibly filtered out)."))
+      next
+    } else {
+        p1  =FeaturePlot(object = dataset, features = g, reduction="umap", label = T, pt.size = 1, order=T) + ggtitle(paste0(g," (",genes[g],")"))
+        p2 = VlnPlot(dataset, features = g, ncol = 1, pt.size = 0.01) + NoLegend() + ggtitle(paste0(g," (",genes[g],")"))
+        print(plot_grid(p1,p2, ncol=2,align="h"))
+    }
+  }
+}
+```
+
+
+```{r, fig.width=14, fig.height=6}
+cluster_markers %>%
+    group_by(cluster) %>%
+    arrange(desc(avg_log2FC)) %>%
+    top_n(n = 30, wt = avg_log2FC) -> top30
+
+top30$Label = top30$cluster
+
+marker_by_cluster = tapply(top30$Label, top30$gene, function(x) paste(unique(sort(x)), collapse=", "))
+
+DefaultAssay(scData.combined) <- "RNA"
+scData.combined$cluster_label = factor(scData.combined$cluster_label, levels=sort(unique(scData.combined$cluster_label)))
+scData.combined <- SetIdent(scData.combined, value="cluster_label" )
+
+
+png(file.path(result_folder, "Top30_Cluster_Markers_%04d.png"), width=1400, height=600)
+plot_genes2(scData.combined, marker_by_cluster)
+dev.off()
+
+pngFiles = list.files(result_folder, pattern="*.png", full.names = T)
+# code from https://jonkimanalyze.wordpress.com/2014/07/24/r-compile-png-files-into-pdf/
+pdf(file.path(result_folder, "Top30_Cluster_Markers.pdf"), width = 14, height = 6)
+n <- length(pngFiles)
+for( i in 1:n) {
+  pngFile <- pngFiles[i]
+  pngRaster <- readPNG(pngFile)
+  grid.raster(pngRaster)
+  if (i < n) grid.newpage() #plot.new()
+}
+dev.off()
+
+```
+
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

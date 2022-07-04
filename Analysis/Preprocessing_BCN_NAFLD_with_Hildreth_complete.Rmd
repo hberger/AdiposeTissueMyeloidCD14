@@ -205,10 +205,10 @@ table(scData.combined$labels_wCD45pos_only, scData.combined$seurat_clusters)
 
 ```{r}
 old_labels_hildreth = read.table("../../DataSets/GSE155960_Hildreth_Adipose/Analysis/Metadata_Hildreth_no_integration.txt", sep="\t", header=T, stringsAsFactors = F)
-rownames(old_labels_hildreth) = old_labels_hildreth$orig_cell_id
+rownames(old_labels_hildreth) = paste0("Hildreth_",old_labels_hildreth$cell_id)
 
 scData.combined@meta.data$labels_hildreth = NA
-scData.combined@meta.data$labels_hildreth = old_labels_hildreth[scData.combined$orig_cell_id, "cluster_label"]
+scData.combined@meta.data$labels_hildreth = old_labels_hildreth[Cells(scData.combined), "cluster_label"]
 
 table(scData.combined$labels_hildreth, scData.combined$seurat_clusters)
 

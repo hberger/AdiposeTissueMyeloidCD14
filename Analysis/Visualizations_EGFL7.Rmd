@@ -1,0 +1,150 @@
+---
+title: "Gene visualizations EGFL7 and possible interaction partners"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r}
+library(Seurat)
+library(ggplot2)
+
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+#data_storage_folder = file.path("./Results/data_storage","2022-05-23")
+#if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+```
+
+
+# Selected genes
+
+  - Notch1; Notch2 ; Notch3 & Notch4
+  - EGFR
+  - αvβ3 integrin (ITGAV + ITGB3)
+  - also interacts with DLL4, Jagged1 (PMID: 31672772,  22160377)
+
+```{r}
+sel_genes = c("EGFL7","EGFR","ERBB2","ERBB3","ERBB4","ITGAV","ITGB3","NOTCH1","NOTCH2","NOTCH3","NOTCH4", "DLL4","JAG1")
+sel_genes
+```
+
+In all dotplots, gene expression levels are centered to mean zero and unit variance for each gene to make them comparable
+
+# BCN alone, all cells
+
+```{r}
+load(file.path("./Results/data_storage/2021-05-31", "BCN_NAFLD.combined_cluster_annotated.RData"))
+```
+
+```{r}
+new_groups_text = "SampleID\tSAMPLE ID_BCN\tNAME\tstage\tstatus
+AP8596\tpatient1\tpatient 1\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AP9962\tAP003\tpatient 2\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AR9955\tP181-control1\tpatient 4\tNAFLD-F0-F1\tNAFLD
+AS2023\tP197\tpatient 3\tNAFLD-F0-F2\tNAFLD
+AR9367\tP184\tcontrol 1\tOBESE\tOBESE
+AR9368\tP189\tcontrol 2\tOBESE\tOBESE"
+new_groups = read.table(text=new_groups_text, sep="\t", header=T)
+new_groups$stage = gsub("-","_", new_groups$stage)
+new_groups
+rownames(new_groups) = new_groups$SampleID
+
+scData.combined$stage_new = new_groups[scData.combined$orig.ident, "stage"]
+scData.combined$status_new = new_groups[scData.combined$orig.ident, "status"]
+```
+
+Integrin alphaVbeta3 = 	ITGAV + ITGB3
+
+```{r, fig.width=14, fig.height=10}
+
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA")
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA", split.by="status_new") + ggtitle("Split by patient group (obese controls vs. NAFLD)")
+```
+
+# BCN alone, only myeloid cells
+
+```{r}
+load(file.path("./Results/data_storage/2021-05-31", "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+```
+
+```{r}
+scData.combined$stage_new = new_groups[scData.combined$orig.ident, "stage"]
+scData.combined$status_new = new_groups[scData.combined$orig.ident, "status"]
+```
+
+
+Integrin alphaVbeta3 = 	ITGAV + ITGB3
+
+```{r, fig.width=14, fig.height=10}
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA")
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA", split.by="status_new") + ggtitle("Split by patient group (obese controls vs. NAFLD)")
+```
+
+# BCN + Hildgreth, all cells
+
+```{r}
+load(file.path("./Results/data_storage/2022-05-23", "BCN_NAFLD_Hildreth_complete.combined_cluster_annotated.RData"))
+```
+
+
+
+```{r, fig.width=14, fig.height=10}
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA")
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA", split.by = "DS") + ggtitle("Split by data set")
+```
+
+```{r, fig.width=10,fig.height=5}
+
+for( g in sel_genes) {
+  p = VlnPlot(scData.combined, assay = "RNA", features = g) + NoLegend()
+  print(p)
+}
+
+```
+
+
+# BCN + Hildgreth, only myeloid cells
+
+```{r}
+load(file.path("./Results/data_storage/2022-05-23", "scData_NAFLD_Hildreth_complete_MoMF.DC.cluster_annotated.RData"))
+```
+
+
+```{r, fig.width=10, fig.height=6}
+DotPlot(scData_MoMF.DC, features = sel_genes, cols = "RdYlGn", assay = "RNA", scale=F)
+```
+
+
+# BCN + Ramachandran Liver, all cells
+
+```{r}
+load(file.path("./Results/data_storage/2022-01-31", "BCN_NAFLD_Ramachandran_complete.combined_cluster_annotated.RData"))
+```
+
+
+```{r, fig.width=14, fig.height=10}
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA")
+DotPlot(scData.combined, features = sel_genes, cols = "RdYlGn", assay = "RNA", split.by = "DS") + ggtitle("Split by data set")
+```
+
+```{r, fig.width=14, fig.height=5}
+for( g in sel_genes) {
+  p = VlnPlot(scData.combined, assay = "RNA", features = g, split.by = "DS")# + NoLegend()
+  print(p)
+}
+```
+
+
+

@@ -1,5 +1,5 @@
 ---
-title: "Pseudotime estimation - BCN Adipose Tissue data set, only myeloid cells"
+title: "Pseudotime estimation, BCN Adipose Tissue + Hildreth adipose tissue cells - myeloid clusters only"
 author: "Hilmar Berger"
 output: 
  html_document:
@@ -30,32 +30,33 @@ library(pheatmap)
 
 #library(monocle)
 library(slingshot)
-library(SingleCellExperiment)
 library(RColorBrewer)
 library(scales)
 
 result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
 if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
 
-data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+data_storage_folder = file.path("./Results/data_storage","2022-05-23")
 if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
 
 library(future)
 options("future.globals.maxSize"=2**33)
 plan("multisession", workers = 8)
 
+rerun_analyses = T
 ```
 
-```{r}
-load(file.path(data_storage_folder,"BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+```{r, message=FALSE, warning=FALSE}
+load(file.path(data_storage_folder,"scData_NAFLD_Hildreth_complete_MoMF.DC.cluster_annotated.RData"))
+scData.combined = scData_MoMF.DC
+rm(scData_MoMF.DC)
+invisible(gc())
 ```
-
 
 ```{r, fig.width=10}
 DimPlot(scData.combined, group.by = "cluster_label", label=T) + NoLegend()
 ```
 
-# Slingshot trajectory analysis
 
 ```{r}
 scData.combined <- SetIdent(scData.combined, value="seurat_clusters")
@@ -66,14 +67,18 @@ sds$cluster_label = as.character(sds$cluster_label)
 ```
 
 ```{r}
-root_cluster = "Inflammatory macrophages"
+root_cluster = "Classical Monocytes/MoMF 1b"
+#root_cluster = "Perivascular MF 1"
 tmp = as.data.frame(unique(colData(sds)[, c("cluster_label","seurat_clusters")]))
 root_cluster_id = as.character(subset(tmp, cluster_label==root_cluster)$seurat_clusters)
 # NOTE: Slingshot will not always respect the provided root cluster, and sometimes will choose a root cluster on its own without warning
 ```
 
+# Slingshot trajectory analysis
+
+
 ```{r}
-sds <- slingshot(sds, clusterLabels = "seurat_clusters", reducedDim = "UMAP", start.clus = root_cluster_id, stretch = 0, extend="n")
+sds <- slingshot(sds, clusterLabels = "seurat_clusters", reducedDim = "UMAP", start.clus = root_cluster_id, stretch = 0)
 ```
 
 
@@ -96,7 +101,7 @@ cell_colors_clust <- cell_pal(sds$seurat_clusters, hue_pal())
 ```
 
 ```{r, echo=FALSE, eval=FALSE}
-lnes <- getLineages(reducedDim(sds,"UMAP"), sds$ident)
+lnes <- getLineages(reducedDim(sds,"UMAP"), sds$seurat_clusters)
 slingLineages(lnes)
 
 ```
@@ -104,20 +109,18 @@ slingLineages(lnes)
 
 ## Minimum spanning tree
 
-### Color by cluster
-
 ```{r}
 plot(reducedDim(sds, "UMAP"), col = cell_colors_clust, pch = 16, cex = 0.5)
 lines(SlingshotDataSet(sds), lwd = 2, type = 'lineages', col = 'black')
 ```
 
 
-### Color by Cluster Type
-
-```{r}
+```{r, eval=FALSE}
 plot(reducedDim(sds, type = "UMAP"), col = cell_colors, pch = 16, cex = 0.5)
 lines(SlingshotDataSet(sds), lwd = 2, type = 'lineages', col = 'black')
 ```
+
+
 
 ## Inferred lineages
 
@@ -145,40 +148,46 @@ lines(SlingshotDataSet(sds_free_root), lwd = 2, col = 'black')
 ```
 
 
-<!-- # Temporally dynamic genes -->
 
-<!-- ```{r} -->
-<!-- library(tradeSeq) -->
-<!-- # library(SingleCellExperiment) -->
+# Temporally dynamic genes
 
-<!-- # sce = SingleCellExperiment(assays=List(counts = scData.combined@assays$RNA@counts, norm=scData.combined@assays$RNA@data), reducedDims = List(UMAP=Embeddings(scData.combined,"umap"))) -->
-<!-- # colData(sce)$GMM <- scData.combined$seurat_clusters -->
-<!-- #  -->
-<!-- # sce = slingshot(sce, clusterLabels="GMM", reducedDim="UMAP") -->
+```{r}
+library(tradeSeq)
+# library(SingleCellExperiment)
 
-<!-- # fit negative binomial GAM -->
+# sce = SingleCellExperiment(assays=List(counts = scData.combined@assays$RNA@counts, norm=scData.combined@assays$RNA@data), reducedDims = List(UMAP=Embeddings(scData.combined,"umap")))
+# colData(sce)$GMM <- scData.combined$seurat_clusters
+#
+# sce = slingshot(sce, clusterLabels="GMM", reducedDim="UMAP")
 
+# fit negative binomial GAM
 
-<!-- library(BiocParallel) -->
-<!-- bp_param = SnowParam(workers=10) -->
+if(rerun_analyses) {
+  library(BiocParallel)
+  bp_param = MulticoreParam(workers = 8)
+  #bp_param = SnowParam(workers = 8)
+  
+  #set.seed(5)
+  #icMat <- evaluateK(counts = scData.combined@assays$RNA@counts, sds = PseudotimeOrdering(sds), k = 3:10, nGenes=200, verbose=T)
+  
+  sds <- fitGAM(sds, BPPARAM=bp_param, parallel = T)
+  
+  # test for dynamic expression
+  ATres <- associationTest(sds)
 
+  save(sds, ATres, file=file.path(data_storage_folder, "Slingshot_AT_with_Hildreth.Rdata") )  
+} else {
+  load("Slingshot_AT_with_Hildreth.Rdata")   
+}
+```
 
-<!-- set.seed(5) -->
-<!-- icMat <- evaluateK(counts = scData.combined@assays$RNA@counts, sds = sds, k = 3:10, nGenes=200, verbose=T) -->
+```{r}
+topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+pst.ord <- order(sds$slingPseudotime_1, na.last = NA)
+heatdata <- assays(sds)$counts[topgenes, pst.ord]
+heatclus <- sds$GMM[pst.ord]
 
-<!-- sce <- fitGAM(counts=scData.combined@assays$RNA@counts, sds = sds, BPPARAM=bp_param) -->
-
-<!-- # test for dynamic expression -->
-<!-- ATres <- associationTest(sds) -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250] -->
-<!-- pst.ord <- order(sce$slingPseudotime_1, na.last = NA) -->
-<!-- heatdata <- assays(sce)$counts[topgenes, pst.ord] -->
-<!-- heatclus <- sce$GMM[pst.ord] -->
-
-<!-- heatmap(log1p(heatdata), Colv = NA, -->
-<!--         ColSideColors = brewer.pal(9,"Set1")[heatclus]) -->
-<!-- ``` -->
+heatmap(log1p(heatdata), Colv = NA,
+        ColSideColors = brewer.pal(9,"Set1")[heatclus])
+```
 

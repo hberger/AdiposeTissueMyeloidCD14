@@ -1,0 +1,147 @@
+---
+title: "Myeloid cells only, additional visualizations"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(writexl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(magrittr)
+library(dplyr)
+
+library(pheatmap)
+
+library(grid)
+library(png)
+
+library(clusterProfiler)
+
+options(connectionObserver = NULL)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(msigdbr)
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+
+data_storage_folder = file.path("./Results/data_storage","2021-05-31")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+library(future)
+options("future.globals.maxSize"=2**33)
+plan("multicore", workers = 8)
+
+
+source("DotPlot_fixed.R")
+source("DGE_Helper.R")
+
+ref_folder = "../../References/"
+
+rerun_analyses = F
+preprocess_data = F
+rerun_gsea_analyses = F
+```
+
+We only keep clusters annotated as MoMF, DC, and KC in the global analysis and reprocess the remaining cells using the same integrated analysis. 
+
+```{r}
+load(file.path(data_storage_folder, "BCN_NAFLD_MoMF_DC_only.combined_cluster_annotated.RData"))
+```
+
+
+
+```{r}
+new_groups_text = "SampleID\tSAMPLE ID_BCN\tNAME\tstage\tstatus
+AP8596\tpatient1\tpatient 1\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AP9962\tAP003\tpatient 2\tNAFLD-ADVANCED FIBROSIS\tNAFLD
+AR9955\tP181-control1\tpatient 4\tNAFLD-F0-F1\tNAFLD
+AS2023\tP197\tpatient 3\tNAFLD-F0-F2\tNAFLD
+AR9367\tP184\tcontrol 1\tOBESE\tOBESE
+AR9368\tP189\tcontrol 2\tOBESE\tOBESE"
+new_groups = read.table(text=new_groups_text, sep="\t", header=T)
+new_groups$stage = gsub("-","_", new_groups$stage)
+new_groups
+rownames(new_groups) = new_groups$SampleID
+
+scData.combined$stage_new = new_groups[scData.combined$orig.ident, "stage"]
+scData.combined$status_new = new_groups[scData.combined$orig.ident, "status"]
+```
+
+
+
+
+# Cluster overview
+
+```{r, fig.width=10, fig.height=6}
+DimPlot(scData.combined, reduction = "umap", label = TRUE)
+```
+
+```{r, fig.width=14, fig.height=8}
+DimPlot(scData.combined, reduction = "umap", label = TRUE, split.by = "status_new")
+```
+
+```{r, fig.width=14, fig.height=8}
+DimPlot(scData.combined, reduction = "umap", label = FALSE, group.by = "status_new", pt.size = 1, shuffle = T) + ggtitle("Cell distribution by patient condition")
+```
+
+## Distribution of clusters within conditions
+
+```{r}
+m = table(scData.combined$cluster_label, scData.combined$status_new)
+m
+```
+
+```{r}
+mm  = as.matrix.data.frame(m)
+colnames(mm) = colnames(m)
+rownames(mm) = rownames(m)
+
+mm_r = sweep(mm, 2, apply(mm,2,sum), "/")
+options(width=200)
+kable(round(mm_r,3))
+```
+
+
+```{r, fig.width=10,fig.height=7}
+pheatmap(mm_r, cluster_cols = F, cluster_rows=T, main="Proportion of cell clusters per condition")
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

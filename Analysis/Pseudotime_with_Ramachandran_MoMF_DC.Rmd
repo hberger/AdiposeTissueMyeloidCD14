@@ -1,5 +1,5 @@
 ---
-title: "Pseudotime estimation"
+title: "Pseudotime estimation, BCN Adipose Tissue + Ramachandran Liver cells - myeloid clusters only"
 author: "Hilmar Berger"
 output: 
  html_document:
@@ -49,33 +49,35 @@ rerun_analyses = F
 ```{r}
 load(file.path(data_storage_folder,"scData_NAFLD_Ramachandran_complete_MoMF.DC.cluster_annotated.RData"))
 scData.combined = scData_MoMF.DC
+rm(scData_MoMF.DC)
+invisible(gc())
+```
+
+```{r, fig.width=10}
+DimPlot(scData.combined, group.by = "cluster_label", label=T) + NoLegend()
+```
+
+
+```{r}
+scData.combined <- SetIdent(scData.combined, value="seurat_clusters")
+sds = as.SingleCellExperiment(scData.combined, assay = "RNA")
+sds$seurat_clusters = as.character(sds$seurat_clusters)
+sds$cluster_label = as.character(sds$cluster_label)
+
 ```
 
 ```{r}
-#m = DEN_CCL4.combined@meta.data[, c("seurat_clusters", "cluster_label","group_label")]
-#mat = Assays(DEN_CCL4.combined, "integrated")@data
-# cds <- newCellDataSet(Assays(DEN_CCL4.combined, "integrated")@data,
-#                          phenoData = new("AnnotatedDataFrame",m),
-#                          featureData = new("AnnotatedDataFrame",data.frame(gene_short_name = rownames(DEN_CCL4.combined@assays$integrated), row.names = rownames(DEN_CCL4.combined@assays$integrated))  ) )
-#rm(m, DEN_CCL4.combined)
-#gc()
-
+root_cluster = "Classical Monocytes/MoMF 1"
+tmp = as.data.frame(unique(colData(sds)[, c("cluster_label","seurat_clusters")]))
+root_cluster_id = as.character(subset(tmp, cluster_label==root_cluster)$seurat_clusters)
+# NOTE: Slingshot will not always respect the provided root cluster, and sometimes will choose a root cluster on its own without warning
 ```
 
-<!-- ```{r, warning=FALSE} -->
-<!-- cds <- estimateSizeFactors(cds) -->
-<!-- gc() -->
-<!-- cds <- reduceDimension(cds, max_components = 25) -->
-<!-- gc() -->
-<!-- cds <- orderCells(cds) -->
-<!-- gc() -->
-<!-- cds <- orderCells(cds, root_state = 5) -->
-<!-- plot_cell_trajectory(cds) -->
-<!-- ``` -->
+
+# Slingshot trajectory analysis
 
 ```{r}
-sds <- slingshot(Embeddings(scData.combined, "umap"), clusterLabels = scData.combined$seurat_clusters, 
-                 start.clus = 1, stretch = 0)
+sds <- slingshot(sds, clusterLabels = "seurat_clusters", reducedDim = "UMAP", start.clus = root_cluster_id, stretch = 0)
 ```
 
 
@@ -93,24 +95,59 @@ cell_pal <- function(cell_vars, pal_fun,...) {
 ```
 
 ```{r}
-cell_colors <- cell_pal(scData.combined$cluster_type, brewer_pal("qual", "Set3"))
-cell_colors_clust <- cell_pal(scData.combined$seurat_clusters, hue_pal())
+cell_colors <- cell_pal(sds$cluster_type, brewer_pal("qual", "Set3"))
+cell_colors_clust <- cell_pal(sds$seurat_clusters, hue_pal())
+```
+
+```{r, echo=FALSE, eval=FALSE}
+lnes <- getLineages(reducedDim(sds,"UMAP"), sds$ident)
+slingLineages(lnes)
+
+```
+
+## Minimum spanning tree
+
+### Color by cluster
+
+```{r}
+plot(reducedDim(sds, "UMAP"), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(SlingshotDataSet(sds), lwd = 2, type = 'lineages', col = 'black')
+```
+
+
+```{r, eval=FALSE}
+plot(reducedDim(sds, type = "UMAP"), col = cell_colors, pch = 16, cex = 0.5)
+lines(SlingshotDataSet(sds), lwd = 2, type = 'lineages', col = 'black')
+```
+
+
+
+## Inferred lineages
+
+### Fixed root cluster
+
+We here have set the root to cluster `r root_cluster`. 
+
+```{r}
+plot(reducedDim(sds, "UMAP"), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(SlingshotDataSet(sds), lwd = 2, col = 'black')
+```
+
+
+### Free root cluster
+
+In this analysis the root cluster will be automatically defined by Slingshot. 
+
+```{r}
+sds_free_root <- slingshot(sds, clusterLabels = "seurat_clusters", reducedDim = "UMAP", stretch = 0, extend="n")
 ```
 
 ```{r}
-plot(reducedDim(sds), col = cell_colors, pch = 16, cex = 0.5)
-lines(sds, lwd = 2, type = 'lineages', col = 'black')
+plot(reducedDim(sds_free_root, "UMAP"), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(SlingshotDataSet(sds_free_root), lwd = 2, col = 'black')
 ```
 
-```{r, fig.width=10,fig.height=8}
-plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.5)
-lines(sds, lwd = 2, type = 'lineages', col = 'black')
-```
 
-```{r}
-plot(reducedDim(sds), col = cell_colors, pch = 16, cex = 0.5)
-lines(sds, lwd = 2, col = 'black')
-```
 
 
 <!-- # Temporally dynamic genes -->
